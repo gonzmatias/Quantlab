@@ -1,0 +1,5 @@
+langgraph>=1.0,<2
+langchain-openai>=1.0,<2
+numpy>=2.0,<3
+pandas>=2.2,<4
+pydantic>=2.10,<3
