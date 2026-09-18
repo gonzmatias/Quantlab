@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="session-token" content="__SESSION_TOKEN__">
+  <title>Quant Lab · Investigación de estrategias</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="#"><span class="brand-mark">Q<span>·</span></span><span>quant<span class="brand-light">lab</span><small>RESEARCH TERMINAL</small></span></a>
+  <div class="workspace-label">ESPACIO DE TRABAJO</div>
+  <a class="nav active" href="#overview"><span>◈</span> Laboratorio <b>01</b></a>
+  <a class="nav" href="#history"><span>▤</span> Pruebas y reportes</a>
+  <div class="sidebar-card"><span class="tiny-label">EL MÉTODO</span><h3>La evidencia<br>decide.</h3><p>Investigar, probar, rechazar y volver a empezar. Cada intento deja un reporte.</p><div class="mini-path">① ─ ② ─ ③ ─ ④ ─ ⑤</div></div>
+  <div class="sidebar-bottom"><span class="connection-dot" id="connectionDot"></span><span id="connectionText">Conectando al motor</span><small>Motor local · LangGraph</small></div>
+</aside>
+<main id="overview">
+  <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Investigación cuantitativa</strong></span><span class="local-pill">◉ LOCAL</span></header>
+  <div class="page-heading"><div><div class="eyebrow">DE LA HIPÓTESIS A LA EVIDENCIA</div><h1>Laboratorio de estrategias<span>.</span></h1><p>Observa cada prueba. Entiende cada resultado.</p></div><button id="settingsButton" class="button secondary">⚙ Configurar pruebas</button></div>
+  <section class="launch-panel" aria-label="Configurar e iniciar búsqueda">
+    <div class="launch-source"><label class="tiny-label">FUENTE DE DATOS</label><div class="segmented"><button id="publicMode" class="selected" aria-pressed="true">Mercados públicos</button><button id="demoMode" aria-pressed="false">Demo sintética</button></div></div>
+<div class="source-description" id="sourceDescription"><strong>Dukascopy + Coinbase · velas diarias</strong><span>Desde 2018 · descarga automática · sin Excel</span></div>
+    <div class="launch-actions"><button id="stopButton" class="button stop hidden">■ Detener</button><button id="startButton" class="button primary">▶ Iniciar investigación</button></div>
+  </section>
+  <div class="notice hidden" id="formError" role="alert"></div>
+  <section class="status-panel" aria-live="polite">
+    <div class="status-top"><span class="status-badge" id="statusBadge">LISTO PARA INICIAR</span><span class="attempt-counter" id="attemptCounter">0 intentos · sin límite</span></div>
+    <div class="strategy-row"><div><div class="tiny-label">ESTRATEGIA EN PRUEBA</div><h2 id="strategyName">Tu próxima hipótesis empieza aquí</h2><p id="stageDescription">Cada hipótesis se compara en los cinco activos antes de iterar.</p></div><div class="orbit" aria-hidden="true"><span>α</span></div></div>
+    <div class="pipeline" id="pipeline">
+      <div data-stage="researcher_node"><span>01</span><strong>Investigar</strong><small>Hipótesis</small></div>
+      <div data-stage="prototyper_node"><span>02</span><strong>Prototipar</strong><small>Reglas y código</small></div>
+      <div data-stage="quant_validator_node"><span>03</span><strong>Validar</strong><small>IS / OOS / DSR</small></div>
+      <div data-stage="stress_test_node"><span>04</span><strong>Estresar</strong><small>Capital de $100</small></div>
+      <div data-stage="production_coder_node"><span>05</span><strong>Generar</strong><small>Código probado</small></div>
+      <div data-stage="reporter_node"><span>06</span><strong>Reportar</strong><small>Evidencia y decisión</small></div>
+    </div>
+  </section>
+  <section class="panel markets-panel"><div class="panel-title"><div><h3>Cinco activos. Una misma estrategia.</h3><p id="assetProgress">EUR/USD · XAU/USD · GBP/USD · CAD/USD · BTC/USD</p></div><span class="local-pill">DIARIO</span></div><div class="table-scroll"><table><thead><tr><th>ACTIVO / FUENTE</th><th>RETORNO OOS</th><th>SHARPE</th><th>DD</th><th>ESTRÉS $100</th><th>ESTADO</th></tr></thead><tbody id="assetRows"></tbody></table></div><p class="market-note">Se destacan ganancias OOS aunque no aprueben. El mejor activo debe superar todos los filtros; se compara Sharpe, drawdown y retorno.</p></section>
+  <div class="metrics-context"><span id="metricsContext">MÉTRICAS DE LA PRUEBA ACTUAL</span><button id="followCurrent" class="hidden">Volver a la prueba en curso →</button></div>
+  <section class="metrics-grid" aria-label="Métricas del intento seleccionado">
+    <article class="metric"><div>RETORNO OOS <span>↗</span></div><strong id="returnMetric">—</strong><small>Neto de costos</small></article>
+    <article class="metric"><div>SHARPE OOS <span>∿</span></div><strong id="sharpeMetric">—</strong><small>Retorno ajustado al riesgo</small></article>
+    <article class="metric"><div>DSR <span>◎</span></div><strong id="dsrMetric">—</strong><small>Umbral probabilístico ≥ 95%</small></article>
+    <article class="metric"><div>DRAWDOWN MÁX. <span>↘</span></div><strong id="drawdownMetric">—</strong><small>Caída desde el máximo OOS</small></article>
+  </section>
+  <div class="analysis-grid">
+    <section class="panel chart-panel"><div class="panel-title"><div><h3>El recorrido del capital</h3><p id="chartCaption">La curva aparecerá al completar el primer backtest.</p></div><select id="chartSelect" aria-label="Seleccionar curva"><option value="oos">Validación OOS</option></select></div>
+      <div id="equityChart" class="chart empty"><div class="empty-chart-icon">∿</div><strong>Primero, los datos.</strong><span>Después, la evidencia de cada operación.</span></div>
+      <div class="drawdown-heading"><span>DRAWDOWN</span><span id="chartRange">—</span></div><div id="drawdownChart" class="drawdown-chart"></div>
+    </section>
+    <section class="panel activity-panel"><div class="panel-title"><div><h3>Actividad del agente</h3><p>Un registro de cada decisión</p></div><span class="live-label" id="liveLabel">EN ESPERA</span></div><div id="activityLog" class="activity-log"><div class="activity-empty"><span>◷</span><p>El motor está preparado.<br>Inicia una investigación para ver su progreso.</p></div></div></section>
+  </div>
+  <section class="panel history-panel" id="history"><div class="panel-title"><div><h3>Pruebas y reportes <span id="historyCount" class="count">0</span></h3><p id="historyDescription">Cada hipótesis conserva sus resultados, incluso cuando se rechaza.</p></div><form id="reportLookup" class="report-lookup"><label for="reportNumber">Abrir intento</label><input id="reportNumber" type="number" min="1" step="1" placeholder="#" required><button class="button secondary" type="submit">Ver reporte</button></form></div>
+    <div class="table-scroll"><table><thead><tr><th>INTENTO</th><th>ESTRATEGIA</th><th>RETORNO OOS</th><th>DSR</th><th>DECISIÓN</th><th></th></tr></thead><tbody id="historyRows"><tr><td colspan="6" class="table-empty">Todavía no hay pruebas. Los reportes aparecerán aquí automáticamente.</td></tr></tbody></table></div>
+  </section>
+  <section id="reportPanel" class="panel report-panel hidden" aria-live="polite"><div class="panel-title"><div><div class="eyebrow">AGENTE DE REPORTES</div><h3 id="reportTitle">Reporte de resultados</h3></div><div class="report-actions"><a id="downloadHtml" class="button secondary" download>↓ HTML</a><a id="downloadJson" class="button secondary" download>↓ JSON</a><a id="downloadCode" class="button primary hidden" href="/api/production" download>↓ Código Python</a></div></div><div id="reportContent"></div></section>
+  <footer><span>QUANT LAB <b>·</b> Cada decisión necesita evidencia.</span><span>Simulación histórica. OOS adaptativo; validación independiente pendiente.</span></footer>
+</main>
+<dialog id="settingsDialog"><form id="settingsForm"><div class="dialog-heading"><div class="eyebrow">CONFIGURACIÓN DEL EXPERIMENTO</div><h2>Define las condiciones.</h2><p>Estos valores se aplicarán en la próxima búsqueda.</p></div>
+  <fieldset><legend>Investigación continua</legend><p class="continuous-info">∞ Sin límite de intentos. Continúa hasta aprobar todos los filtros o pulsar <strong>Detener</strong>.</p><div class="form-grid"><label>Ensayos de referencia del DSR<input name="dsr_trial_budget" type="number" min="1" value="100" required></label><label>Operaciones mínimas<input name="min_trades" type="number" min="1" value="30" required></label><label>Drawdown máximo (%)<input name="max_drawdown" type="number" min="1" max="25" step="0.1" value="25" required></label></div><small>La referencia DSR no limita la ejecución. El control estadístico aumenta con los intentos. La demo sintética continúa hasta que la detengas; no puede aprobar una estrategia real.</small></fieldset>
+  <fieldset><legend>Costos por activo · supuestos editables</legend><p>Sin apalancamiento. Frecuencia: 252 barras/año FX y oro; 365 BTC. Estos valores son supuestos conservadores, no condiciones confirmadas de un bróker.</p><div id="assetCostForms"></div><small>bps = 0,01%. Cantidad: unidades de divisa, onzas de oro o BTC. Con mínimos de 1.000 unidades / 1 onza, $100 puede no permitir operar.</small></fieldset>
+  <fieldset><legend>Modelo de IA · investigación con datos públicos</legend><label>Nombre del modelo<input id="modelInput" placeholder="Modelo con salida estructurada y búsqueda web" autocomplete="off"></label><label>Clave API de OpenAI<input id="apiKeyInput" type="password" placeholder="Usar la clave del entorno, si está configurada" autocomplete="off"></label><small id="keyHint">Se requiere un modelo compatible con búsqueda web y salida estructurada. Cada intento consulta fuentes en internet y consume API. La clave permanece en memoria y no se incluye en los reportes.</small></fieldset>
+  <div class="dialog-actions"><button type="button" id="closeSettings" class="button secondary">Cerrar</button><button type="submit" class="button primary">Guardar configuración</button></div>
+</form></dialog>
+</body></html>

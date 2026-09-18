@@ -46,8 +46,8 @@ class AgentTests(unittest.TestCase):
 
     def test_dsr_and_search_penalty(self):
         r = np.random.default_rng(4).normal(.001, .01, 1000)
-        one = deflated_sharpe(r, Settings(max_iterations=1))
-        ten = deflated_sharpe(r, Settings(max_iterations=10))
+        one = deflated_sharpe(r, Settings(dsr_trial_budget=1))
+        ten = deflated_sharpe(r, Settings(dsr_trial_budget=10))
         self.assertLess(ten["dsr"], one["dsr"])
         self.assertTrue(0 <= ten["dsr"] <= 1)
         self.assertEqual(deflated_sharpe(np.zeros(100), Settings())["dsr"], 0)
@@ -56,7 +56,7 @@ class AgentTests(unittest.TestCase):
 
     def test_ten_attempts_and_no_production(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = TradingAgent(demo_data(), Settings(min_trades=100000), Path(tmp)/"run", demo=True)
+            agent = TradingAgent(demo_data(), Settings(max_iterations=10, min_trades=100000), Path(tmp)/"run", demo=True)
             result = agent.run()
             self.assertEqual(result["iteration_count"], 10)
             self.assertEqual(result["status"], "REJECTED")
@@ -66,14 +66,16 @@ class AgentTests(unittest.TestCase):
 
     def test_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = TradingAgent(demo_data(), Settings(), Path(tmp)/"run", demo=True)
+            agent = TradingAgent(demo_data(), Settings(max_iterations=10), Path(tmp)/"run", demo=True)
             state = initial_state()
             state.update(iteration_count=9, status="REJECTED")
-            self.assertEqual(agent.should_continue_after_quant(state), "researcher_node")
-            self.assertEqual(agent.should_continue_after_stress(state), "researcher_node")
+            self.assertEqual(agent.should_continue_after_quant(state), "reporter_node")
+            self.assertEqual(agent.should_continue_after_stress(state), "reporter_node")
+            self.assertEqual(agent.should_continue_after_report(state), "researcher_node")
             state["iteration_count"] = 10
-            self.assertEqual(agent.should_continue_after_quant(state), END)
-            self.assertEqual(agent.should_continue_after_stress(state), END)
+            self.assertEqual(agent.should_continue_after_quant(state), "reporter_node")
+            self.assertEqual(agent.should_continue_after_stress(state), "reporter_node")
+            self.assertEqual(agent.should_continue_after_report(state), END)
             state.update(status="RESEARCHING", quant_metrics={"passed": True}, stress_metrics={"passed": True})
             self.assertEqual(agent.should_continue_after_quant(state), "stress_test_node")
             self.assertEqual(agent.should_continue_after_stress(state), "production_coder_node")
