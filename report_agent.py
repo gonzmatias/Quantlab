@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import json
 from research import safe_source_url
+from validation import validation_complete
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def number(value, percent: bool = False) -> str:
 def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
     quant, stress = state.get("quant_metrics", {}), state.get("stress_metrics", {})
     ins, oos = quant.get("in_sample", {}), quant.get("out_of_sample", {})
-    approved = state.get("status") == "APPROVED" and quant.get("passed") and stress.get("passed") and not synthetic
+    approved = state.get("status") == "APPROVED" and validation_complete(quant, stress) and not synthetic
     reasons = list(quant.get("rejection_reasons", [])) + list(stress.get("rejection_reasons", []))
     if not approved and not reasons:
         reasons = state.get("logs", [])[-1:] or ["No se completaron todas las pruebas."]
@@ -85,6 +86,20 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
               f"Ganancia; DD ≤ {settings['max_drawdown']:.0%}; ≥ {settings['min_trades']} operaciones; sin quiebra", passed)
     if not stress:
         check("Estrés de $100", "No ejecutado", "Requiere aprobar validación cuantitativa", None)
+    advanced_specs = {
+        "regression": ("Regresión histórica alfa/beta", "Límite inferior del alfa HAC > 0; al menos 60 observaciones"),
+        "walk_forward": ("Walk-forward cronológico", "≥ 2/3 ventanas válidas; retorno agregado positivo, operaciones y DD dentro de límites"),
+        "parameters": ("Estrés de parámetros ±20%", f"≥ {settings.get('parameter_pass_min', .8):.0%} de variantes válidas"),
+        "monte_carlo": ("Monte Carlo por bloques", f"P(ganancia) ≥ {settings.get('monte_carlo_profit_min', .9):.0%}; DD percentil 95 dentro del límite; ruina ≤ 1%"),
+        "signal_delay": ("Retraso de señales", "Un día adicional; retorno y Sharpe positivos, operaciones y DD dentro de límites"),
+        "concentration": ("Dependencia de días excepcionales", "Retorno positivo al anular los cinco mejores días"),
+    }
+    tests = {**quant.get("advanced_tests", {}), **stress.get("robustness_tests", {})}
+    for key, (label, requirement) in advanced_specs.items():
+        result = tests.get(key, {})
+        evaluated = result and result.get("status") != "SKIPPED"
+        check(label, result.get("reason", "No ejecutada; requiere aprobar filtros anteriores"), requirement,
+              bool(result.get("passed")) if evaluated else None)
     outcome = "APPROVED" if approved else "REJECTED"
     attempt = state.get("iteration_count", 0)
     return {
@@ -95,7 +110,7 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         "selected_asset": state.get("selected_asset", ""),
         "asset_results": {a: {k: v for k, v in r.items() if k != "charts"} for a, r in state.get("asset_results", {}).items()},
         "positive_assets": [a for a, r in state.get("asset_results", {}).items() if r.get("quant_metrics", {}).get("out_of_sample", {}).get("net_return", 0) > 0],
-        "ranking_rule": "Entre los aprobados en ambos filtros: mayor Sharpe OOS, menor drawdown y mayor retorno. Sin aprobado, se muestra el mejor candidato cuantitativo.",
+        "ranking_rule": "Cada activo debe superar backtest, regresión, walk-forward y todos los filtros de estrés/robustez. Entre aprobados: mayor Sharpe OOS, menor drawdown y mayor retorno. Sin aprobado, el destacado es sólo diagnóstico.",
         "summary": ((f"La estrategia superó los filtros cuantitativos y de capital reducido en {state.get('selected_asset') or 'el activo evaluado'}."
                     if approved else "El intento no superó todos los filtros. Se conserva el diagnóstico para la siguiente hipótesis.")
                     + (" Comparación completada: " + ", ".join(state["asset_results"]) + "." if state.get("asset_results") else "")),
@@ -107,6 +122,10 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         "limitations": ["Datos sintéticos de demostración; no prueban alfa." if synthetic else
                         "OOS reutilizado de forma adaptativa; requiere una prueba independiente.",
                         "DSR aproximado mediante bootstrap por bloques.",
+                        "Regresión explicativa de retornos con alfa/beta y errores HAC; no predice precios ni prueba causalidad. Tipo libre de riesgo supuesto cero.",
+                        "Walk-forward con entrenamiento creciente, separación max_holding y reglas congeladas; no reoptimiza parámetros.",
+                        "Monte Carlo remuestrea retornos netos históricos por bloques. No reconstruye ejecuciones ni eventos nunca observados; ruina operativa = pérdida del 95% del capital inicial.",
+                        "Los umbrales de robustez son criterios configurados, no garantías estadísticas de rentabilidad futura. Una prueba fallida omite las posteriores de ese activo.",
                         "La evidencia exigida aumenta con los intentos; el ajuste secuencial no valida por sí solo un OOS adaptativo.",
                         "Stops al cierre y ejecución en apertura siguiente; el drawdown es al cierre.",
                         "Costos y mínimos por activo son supuestos editables, no tarifas verificadas. FX/oro incluyen débito diario supuesto; sin apalancamiento ni créditos de swap.",
@@ -159,6 +178,7 @@ pre{{white-space:pre-wrap;background:#f3f6f8;padding:16px}}@media print{{body,ma
 <pre>{esc(json.dumps(h, ensure_ascii=False, indent=2))}</pre>
 {research_html(report)}
 <h2>Resultados frente a los filtros</h2><table><thead><tr><th>Prueba</th><th>Resultado</th><th>Requisito</th><th>Estado</th></tr></thead><tbody>{rows}</tbody></table>
+<details><summary>Detalle de regresión, walk-forward y robustez</summary><pre>{esc(json.dumps({'quant': report['quant_metrics'].get('advanced_tests', {}), 'stress': report['stress_metrics'].get('robustness_tests', {})}, ensure_ascii=False, indent=2))}</pre></details>
 <h2>Capital durante las pruebas</h2>{charts or '<p>No se ejecutaron pruebas con curva de capital.</p>'}
 <h2>Diagnóstico y siguiente paso</h2><ul>{reasons}</ul><p>{esc(report['next_action'])}</p>
 <h2>Alcance de la evidencia</h2><ul>{limits}</ul></main></html>'''
@@ -180,6 +200,9 @@ def write_report(report: dict, output: Path) -> None:
               json.dumps(report.get("research", {}), ensure_ascii=False, indent=2), "```",
               "", "## Comparación IS con la familia sin filtros", "", "```json",
               json.dumps(report.get("quant_metrics", {}).get("baseline_comparison", {}), ensure_ascii=False, indent=2), "```"]
+    lines += ["", "## Pruebas avanzadas", "", "```json", json.dumps({
+        "quant": report.get("quant_metrics", {}).get("advanced_tests", {}),
+        "stress": report.get("stress_metrics", {}).get("robustness_tests", {})}, ensure_ascii=False, indent=2), "```"]
     lines += ["", "## Resultados por activo", "", f"Activo seleccionado: {report.get('selected_asset', '')}", ""]
     for asset, row in report.get("asset_results", {}).items():
         lines += [f"### {asset}", "", "```json", json.dumps(row, ensure_ascii=False, indent=2), "```", ""]

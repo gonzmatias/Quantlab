@@ -120,7 +120,8 @@ class AgentTests(unittest.TestCase):
             agent = TradingAgent(demo_data(), Settings(), Path(tmp)/"run", demo=True)
             state = initial_state()
             state.update(hypothesis=H, history=[{"hypothesis": H}])
-            baseline = dict(bankrupt=False, max_drawdown=.1, net_return=.1, trades=40)
+            baseline = dict(bankrupt=False, max_drawdown=.1, net_return=.1, trades=40, sharpe=1.,
+                            returns=np.linspace(.0001, .0003, 100))
             for change in ({"max_drawdown": .26}, {"bankrupt": True}, {"net_return": 0}, {"trades": 1}):
                 with patch("trading_agent.backtest", return_value={**baseline, **change}):
                     self.assertFalse(agent.stress_test_node(state)["stress_metrics"]["passed"])

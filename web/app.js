@@ -5,8 +5,8 @@ const stages = ["researcher_node", "prototyper_node", "quant_validator_node", "s
 const descriptions = {
   researcher_node: "Buscando fuentes, comprobando compatibilidad y formulando una hipótesis verificable con datos de entrenamiento.",
   prototyper_node: "El agente convierte la hipótesis en un prototipo reproducible.",
-  quant_validator_node: "Evaluando entrenamiento, prueba fuera de muestra y filtros estadísticos.",
-  stress_test_node: "Simulando $100 con costos normales, dobles y triples.",
+  quant_validator_node: "Backtest, regresión histórica y walk-forward. Si un activo falla, se evalúa el siguiente.",
+  stress_test_node: "Estrés de costos y parámetros, Monte Carlo, retraso de señales y concentración de beneficios.",
   production_coder_node: "Preparando el módulo de simulación con las reglas que superaron las pruebas.",
   reporter_node: "El agente de reportes está documentando la evidencia y la decisión."
 };
@@ -206,6 +206,7 @@ async function loadReport(attempt, scroll) {
     $("reportContent").innerHTML=`<div class="report-summary ${ok?'success':''}"><span class="symbol">${ok?'✓':'↻'}</span><div><h4>${ok?'Filtros superados · aprobado en simulación':'Intento rechazado · diagnóstico disponible'}</h4><p>${escapeHtml(report.summary)} ${escapeHtml(report.next_action)}</p></div></div><p class="report-copy">${escapeHtml(h.rationale || 'No se obtuvo una hipótesis válida en este intento.')}</p><div class="params">${parameters.map(([key,value])=>`<span>${escapeHtml(key)} <b>${escapeHtml(value)}</b></span>`).join('')}</div><h4 class="report-section-title">Resultados frente a los criterios de aprobación</h4><div class="check-grid">${report.checks.map(c=>`<div class="check ${c.passed===false?'fail':c.passed===null?'skip':''}"><span class="indicator">${c.passed===true?'✓':c.passed===false?'×':'—'}</span><div><strong>${escapeHtml(c.label)}</strong><p>${escapeHtml(c.value)}</p><small>${escapeHtml(c.requirement)}</small></div></div>`).join('')}</div>${report.rejection_reasons.length?`<h4 class="report-section-title">Motivos de rechazo</h4><ul class="reasons">${report.rejection_reasons.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul>`:''}<div class="limitations">${report.limitations.map(l=>escapeHtml(l)).join('<br>')}</div>`;
     document.querySelectorAll("#historyRows tr[data-attempt]").forEach(row=>row.classList.toggle("selected",Number(row.dataset.attempt)===attempt));
     $("reportContent").insertAdjacentHTML("beforeend", renderResearch(report));
+    $("reportContent").insertAdjacentHTML("beforeend", `<details class="asset-cost"><summary>Detalle de regresión, walk-forward y robustez del activo destacado</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify({quant:report.quant_metrics?.advanced_tests || {},stress:report.stress_metrics?.robustness_tests || {}},null,2))}</pre></details>`);
     $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Resultados completos de los cinco activos</h4><p>OOS positivo: ${escapeHtml((report.positive_assets||[]).join(', ')||'ninguno')}. Activo destacado: ${escapeHtml(report.selected_asset||'—')}.</p>${Object.entries(report.asset_results||{}).map(([asset,row])=>`<details class="asset-cost"><summary>${escapeHtml(asset)} · métricas, fuente y costos</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify(row,null,2))}</pre></details>`).join('')}`);
     chartKey="oos"; renderCharts(report.charts);
     if (scroll) $("reportPanel").scrollIntoView({behavior:"smooth",block:"start"});

@@ -53,19 +53,67 @@ si dejan de responder; no se eluden verificaciones de navegador.
 1. Investigar: búsqueda web real de fuentes primarias, análisis de compatibilidad
    y ficha de hipótesis estructurada. Guarda URLs trazables, hallazgos, limitaciones,
    mecanismo, predicción, criterio de descarte y justificación de la adaptación.
-   El investigador recibe sólo estadísticas y resultados de entrenamiento, no
-   métricas OOS ni logs del validador. SQLite conserva investigaciones y rechazos.
+   El investigador recibe estadísticas y resultados de entrenamiento, más motivos
+   de rechazo por activo; no recibe las series ni métricas numéricas OOS.
+   El feedback de rechazo también hace adaptativa la búsqueda. SQLite conserva
+   investigaciones y rechazos.
    En modo real se rechaza repetir familia + régimen + confirmación, aunque cambien
    parámetros. No se sustituyen duplicados por variantes automáticas; esa conducta
    permanece únicamente en la demo.
 2. Prototipar: reglas y parámetros congelados para los cinco activos. Costos y
    tamaños mínimos dependen del instrumento. El LLM no ejecuta código arbitrario.
-3. Validar: prueba TODOS los activos antes de avanzar. Misma fecha de división
-   temporal 70/30, con IS/OOS, DSR y tres ventanas progresivas.
-4. Estresar: $100 con costos x1, x2 y x3 en TODOS los activos que aprobaron quant.
+3. Validar por activo: backtest IS/OOS, DSR, regresión alfa/beta y walk-forward.
+   Misma fecha de división temporal 70/30. Si falla un filtro, omite las pruebas
+   posteriores y cambia de activo, sin modificar las reglas.
+4. Estresar ese mismo activo: $100 con costos x1/x2/x3, perturbaciones de parámetros,
+   Monte Carlo, retraso de señales y concentración de beneficios. Después pasa al
+   siguiente activo. Evalúa los cinco antes de reformular; sólo acepta activos que
+   superaron todos los filtros. Las pruebas omitidas se distinguen de las fallidas.
 5. Generar: entre los aprobados en ambos filtros, selecciona mayor Sharpe OOS,
    luego menor drawdown y mayor retorno. Exporta el simulador del activo elegido.
 6. Reportar: conserva resultados de los cinco. Sin aprobación vuelve a investigar.
+
+### Pruebas obligatorias por activo
+
+Los valores siguientes son criterios iniciales configurables, no garantías de éxito.
+No se reducen automáticamente durante la búsqueda. El capital de estrés sigue siendo
+$100, sin apalancamiento y respetando los mínimos de cada instrumento.
+
+| Prueba | Método y aprobación |
+|---|---|
+| Backtest | 70/30 temporal, costos y mínimos reales del modelo; mantiene filtros IS/OOS, DSR, PF, operaciones y drawdown |
+| Regresión histórica | OLS de retornos netos OOS de estrategia contra retornos diarios del propio activo; alfa/beta, errores Newey–West (HAC), mínimo 60 observaciones; alfa − 1,645 × error estándar > 0 |
+| Walk-forward | 3 ventanas forward sin solapamiento; entrenamiento previo creciente, separación de max_holding barras; reglas congeladas, sin reoptimización; al menos 2/3 ventanas válidas, ganancias agregadas y DD dentro del límite |
+| Costos | $100 con costos x1/x2/x3; todos deben superar criterios de retorno, operaciones, DD y solvencia |
+| Parámetros | Cada parámetro ejecutable varía ±20%, uno por vez, dentro del esquema; mínimo 4 variantes y ≥80% con retorno/Sharpe positivos, operaciones suficientes, sin quiebra y DD aceptable |
+| Monte Carlo | 1.000 trayectorias por bloque de 5, 10 y 20 barras (3.000 total); en cada grupo P(ganancia) ≥90%, DD percentil 95 ≤límite y ruina operativa ≤1% |
+| Retraso | Señales de entrada y salida por condición retrasadas una barra adicional; stops y límites de tenencia mantienen su lógica; exige retorno/Sharpe positivos, operaciones y DD válidos |
+| Concentración | Anula los retornos de los cinco mejores días positivos; el rendimiento compuesto restante debe seguir positivo |
+
+La regresión es explicativa, no un predictor de precios; supone tasa libre de riesgo
+cero. El umbral z es asintótico, unilateral, y no corrige por sí solo la selección
+adaptativa. Muestras degeneradas o sin varianza no se aprueban.
+
+Cada ventana walk-forward arranca en efectivo y liquida al final con costos.
+Entrenamiento requiere el mínimo general de operaciones; cada test exige al menos
+ceil(min_trades / ventanas). Se exige el mínimo general en total, DD aceptable en
+todas las ventanas de test y en la curva concatenada. Se prueban exactamente las
+reglas que se exportarían: no se selecciona retrospectivamente la variante ganadora.
+
+Monte Carlo remuestrea bloques circulares de los retornos netos diarios de la cuenta
+de $100, con semilla reproducible. Ruina operativa significa perder ≥95% del capital
+inicial. No reconstruye órdenes, tamaños mínimos o costos dependientes de otra
+trayectoria, ni modela eventos que no existen en la muestra. La concentración también
+es una sensibilidad de retornos, no un segundo simulador de ejecución.
+
+El motor continúa hasta encontrar un aprobado, pulsar Detener, un error operativo o
+alcanzar un límite opcional configurado. No garantiza encontrarlo. Una ganancia sola
+no habilita la exportación: se comprueba explícitamente que estén aprobadas todas las
+pruebas avanzadas. Los filtros usan el histórico disponible y no sustituyen datos
+posteriores independientes.
+
+Referencias metodológicas: [covarianza HAC/Newey–West](https://www.statsmodels.org/dev/generated/statsmodels.stats.sandwich_covariance.cov_hac.html)
+y [divisiones cronológicas con separación](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html).
 
 ### Investigación con fuentes
 
@@ -184,7 +232,8 @@ constituye automáticamente una nueva validación.
   presupuesto DSR y combinaciones estrategia-activo. Umbral secuencial creciente.
 - IS/OOS positivos, Sharpe positivo, degradación <=20%, DD <=25%, 30 operaciones
   por segmento, PF OOS >=1,2 (o ninguna pérdida), y 2/3 ventanas positivas.
-  Ventanas con reglas congeladas, sin reentrenamiento por ventana.
+  Ventanas con reglas congeladas, sin reentrenamiento por ventana. Además se exigen
+  regresión, walk-forward con separación y las pruebas de robustez descritas arriba.
 - Se reutiliza OOS adaptativamente. Una búsqueda ilimitada no garantiza hallar
   rentabilidad; los ajustes no reemplazan datos posteriores independientes.
 - Long-only, sin apalancamiento. Señales y stops al cierre, ejecución en apertura

@@ -32,6 +32,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from langgraph.graph import END, START, StateGraph
 from report_agent import build_report, strategy_name, write_report
 from research import ResearchBrief, extract_web_evidence, validate_brief
+from validation import (regression_test, walk_forward_test, parameter_stress, monte_carlo_test,
+                        concentration_test, skipped, viable, summarize, validation_complete)
 
 LOGGER = logging.getLogger("quant_agent")
 
@@ -112,9 +114,14 @@ class Settings:
     seed: int = 42
     quote_side: int = 0  # 0=trade/mid proxy, 1=BID, 2=ASK (CAD/USD inverso)
     holding_cost_bps: float = 0.0  # débito diario supuesto, sin créditos de swap
+    walk_forward_folds: int = 3
+    regression_z_min: float = 1.645
+    parameter_pass_min: float = .8
+    monte_carlo_samples: int = 1000  # por longitud de bloque: 3000 trayectorias en total
+    monte_carlo_profit_min: float = .9
 
     def __post_init__(self):
-        for field in ("max_iterations", "dsr_trial_budget", "bars_per_year", "min_trades", "bootstrap_samples", "seed"):
+        for field in ("max_iterations", "dsr_trial_budget", "bars_per_year", "min_trades", "bootstrap_samples", "seed", "walk_forward_folds", "monte_carlo_samples"):
             if type(getattr(self, field)) is not int:
                 raise ValueError(f"{field} debe ser un número entero")
         if self.max_iterations < 0 or self.dsr_trial_budget < 1:
@@ -132,6 +139,10 @@ class Settings:
             raise ValueError("Fricciones incompatibles con precios de ejecución positivos")
         if self.quote_side not in (0, 1, 2):
             raise ValueError("quote_side debe ser 0, 1 o 2")
+        if not 3 <= self.walk_forward_folds <= 10 or not 200 <= self.monte_carlo_samples <= 10000:
+            raise ValueError("Walk-forward requiere 3–10 ventanas y Monte Carlo 200–10000 simulaciones por bloque")
+        if not 0 < self.parameter_pass_min <= 1 or not 0 < self.monte_carlo_profit_min <= 1 or self.regression_z_min < 1.645:
+            raise ValueError("Probabilidades de robustez en (0,1] y z de regresión >= 1.645")
 
 
 def validate_data(frame: pd.DataFrame, minimum: int = 600) -> pd.DataFrame:
@@ -196,7 +207,7 @@ def signals(data: pd.DataFrame, h: dict) -> np.ndarray:
 
 def backtest(data: pd.DataFrame, h: dict, cfg: Settings, capital: float,
              start: int = 0, end: int | None = None, cost_multiplier: float = 1.0,
-             checkpoint=None) -> dict:
+             checkpoint=None, signal_delay: int = 0) -> dict:
     """Long-only, sin apalancamiento. Stops al cierre, ejecutados en próxima apertura.
 
     No supone fills intrabar ni usa high/low futuros. Liquida al cierre final con costos.
@@ -205,6 +216,8 @@ def backtest(data: pd.DataFrame, h: dict, cfg: Settings, capital: float,
     end = len(data) if end is None else end
     if not 0 <= start < end <= len(data) or capital <= 0:
         raise ValueError("Segmento o capital inválido")
+    if type(signal_delay) is not int or signal_delay < 0:
+        raise ValueError("Retraso de señal debe ser entero no negativo")
     sig = signals(data, h)
     friction = (cfg.spread_bps / 2 + cfg.slippage_bps) * cost_multiplier / 10000
     buy_friction = ((cfg.spread_bps if cfg.quote_side == 1 else 0 if cfg.quote_side == 2 else cfg.spread_bps/2) + cfg.slippage_bps) * cost_multiplier / 10000
@@ -220,6 +233,8 @@ def backtest(data: pd.DataFrame, h: dict, cfg: Settings, capital: float,
         if checkpoint and (i - start) % 256 == 0:
             checkpoint()
         sold = False
+        signal_index = i - 1 - signal_delay
+        active_signal = signal_index >= 0 and sig[signal_index]
         if qty:
             days = max(1, (data.timestamp.iloc[i] - data.timestamp.iloc[i-1]).days) if cfg.holding_cost_bps else 1
             carry = qty * c[i-1] * cfg.holding_cost_bps / 10000 * cost_multiplier * days
@@ -227,7 +242,7 @@ def backtest(data: pd.DataFrame, h: dict, cfg: Settings, capital: float,
             debit += carry
             age += 1
             previous = c[i - 1]
-            exit_now = (not sig[i - 1] or previous <= entry * (1 - h["stop_loss"])
+            exit_now = (not active_signal or previous <= entry * (1 - h["stop_loss"])
                         or previous >= entry * (1 + h["take_profit"])
                         or age >= h["max_holding"])
             if exit_now:
@@ -236,7 +251,7 @@ def backtest(data: pd.DataFrame, h: dict, cfg: Settings, capital: float,
                 cash += proceeds
                 trades.append(proceeds - debit)
                 qty, sold = 0.0, True
-        if not qty and not sold and i > 0 and sig[i - 1] and cash > 0:
+        if not qty and not sold and active_signal and cash > 0:
             price = o[i] * (1 + buy_friction)
             budget = cash * h["allocation"]
             units = max(0.0, (budget - fixed) / (price * (1 + rate)))
@@ -667,7 +682,19 @@ class TradingAgent:
             reasons.append("Profit Factor OOS < 1.2")
         if sum(f["net_return"] > 0 for f in folds) < 2:
             reasons.append("Menos de 2/3 ventanas progresivas positivas")
+        advanced = {"regression": skipped("Requiere aprobar backtest básico"),
+                    "walk_forward": skipped("Requiere aprobar regresión")}
+        if not reasons:
+            market_returns = self.data.close.pct_change().iloc[split:].to_numpy()
+            advanced["regression"] = regression_test(oos["returns"], market_returns, cfg.regression_z_min)
+            if not advanced["regression"]["passed"]:
+                reasons.append(advanced["regression"]["reason"])
+            else:
+                advanced["walk_forward"] = walk_forward_test(self.data, h, cfg, split, backtest, self.check_stop)
+                if not advanced["walk_forward"]["passed"]:
+                    reasons.append(advanced["walk_forward"]["reason"])
         metrics = {"passed": not reasons, "in_sample": compact(ins), "out_of_sample": compact(oos),
+                   "advanced_tests": advanced,
                    "baseline_in_sample": compact(baseline),
                    "baseline_comparison": {"net_return_difference": ins["net_return"] - baseline["net_return"],
                                            "sharpe_difference": ins["sharpe"] - baseline["sharpe"],
@@ -694,8 +721,31 @@ class TradingAgent:
             if (result["bankrupt"] or result["max_drawdown"] > self.cfg.max_drawdown
                     or result["net_return"] <= 0 or result["trades"] < self.cfg.min_trades):
                 reasons.append(f"Costos x{name}: retorno, drawdown, quiebra o número de operaciones inválido")
+        robustness = {key: skipped("Requiere aprobar los filtros anteriores") for key in
+                      ("parameters", "monte_carlo", "signal_delay", "concentration")}
+        if not reasons:
+            robustness["parameters"] = parameter_stress(self.data, state["hypothesis"], self.cfg, start, backtest, self.check_stop)
+            if not robustness["parameters"]["passed"]:
+                reasons.append(robustness["parameters"]["reason"])
+        if not reasons:
+            robustness["monte_carlo"] = monte_carlo_test(raw["1"]["returns"], self.cfg, self.check_stop)
+            if not robustness["monte_carlo"]["passed"]:
+                reasons.append(robustness["monte_carlo"]["reason"])
+        if not reasons:
+            delayed = backtest(self.data, state["hypothesis"], self.cfg, 100, start,
+                               signal_delay=1, checkpoint=self.check_stop)
+            passed = bool(viable(delayed, self.cfg))
+            robustness["signal_delay"] = {"passed": passed, "status": "PASSED" if passed else "FAILED",
+                                          "extra_bars": 1, "metrics": summarize(delayed),
+                                          "reason": "Retraso de señales aprobado" if passed else "Fracasa con un día adicional de retraso de señales"}
+            if not passed:
+                reasons.append(robustness["signal_delay"]["reason"])
+        if not reasons:
+            robustness["concentration"] = concentration_test(raw["1"]["returns"])
+            if not robustness["concentration"]["passed"]:
+                reasons.append(robustness["concentration"]["reason"])
         metrics = {"initial_capital": 100, "passed": not reasons, "scenarios": scenarios,
-                   "rejection_reasons": reasons}
+                   "robustness_tests": robustness, "rejection_reasons": reasons}
         history = [dict(row) for row in state["history"]]
         history[-1]["stress_metrics"] = metrics
         return {"stress_metrics": metrics, "status": "REJECTED" if reasons else "RESEARCHING",
@@ -753,10 +803,19 @@ class TradingAgent:
                            "settings": asdict(self.cfg), "quant_metrics": result["quant_metrics"],
                            "stress_metrics": {}, "charts": result["charts"]}
             logs = self.log({**state, "logs": result["logs"]}, f"{asset}: OOS {result['quant_metrics']['out_of_sample']['net_return']:.2%}")
+            if result["quant_metrics"]["passed"]:
+                self.asset_update(state, rows, asset, index, "stress_test_node")
+                stressed = self._stress_single({**state, "logs": logs, "charts": result["charts"],
+                                               "history": [{"hypothesis": state["hypothesis"]}]})
+                rows[asset].update(stress_metrics=stressed["stress_metrics"], charts=stressed["charts"])
+                logs = stressed["logs"]
+            approved = rows[asset]["quant_metrics"]["passed"] and rows[asset]["stress_metrics"].get("passed", False)
+            logs = self.log({**state, "logs": logs}, f"{asset}: " + ("superó todas las pruebas" if approved else
+                            "rechazado; pasar al siguiente activo" if index < len(self.datasets) else "rechazado; evaluación de activos terminada"))
         self.quant_trial_index = None
         selected = max(rows, key=lambda a: self.rank_asset(rows[a]))
         result = self.select_result(state, rows, selected, logs)
-        result["status"] = "RESEARCHING" if any(r["quant_metrics"]["passed"] for r in rows.values()) else "REJECTED"
+        result["status"] = "RESEARCHING" if any(r["quant_metrics"]["passed"] and r["stress_metrics"].get("passed") for r in rows.values()) else "REJECTED"
         return result
 
     def stress_test_node(self, state):
@@ -764,7 +823,7 @@ class TradingAgent:
             return self._stress_single(state)
         rows, logs = copy.deepcopy(state["asset_results"]), state["logs"]
         for index, (asset, row) in enumerate(rows.items(), 1):
-            if not row["quant_metrics"]["passed"]:
+            if not row["quant_metrics"]["passed"] or row.get("stress_metrics"):
                 continue
             self.check_stop()
             self.use_asset(asset)
@@ -783,6 +842,8 @@ class TradingAgent:
             raise RuntimeError("Producción requiere ambos filtros aprobados")
         if self.demo:
             return {"status": "REJECTED", "logs": self.log(state, "Datos sintéticos: exportación de producción bloqueada")}
+        if not validation_complete(state["quant_metrics"], state["stress_metrics"]):
+            raise RuntimeError("Producción requiere regresión, walk-forward y todas las pruebas de robustez aprobadas")
         notes = self.call_model(CodeNotes,
             "Documenta el módulo Python de simulación que compilará el generador determinista. "
             "No modifiques reglas ni afirmes validación live. Describe límites de OOS adaptativo, "
@@ -811,8 +872,13 @@ class TradingAgent:
                 asset: {key: row.get("quant_metrics", {}).get(key) for key in
                         ("in_sample", "baseline_in_sample", "baseline_comparison")}
                 for asset, row in rows.items()}
+            research["validation_feedback"] = {
+                asset: {"passed": bool(row.get("quant_metrics", {}).get("passed") and row.get("stress_metrics", {}).get("passed")),
+                        "reasons": row.get("quant_metrics", {}).get("rejection_reasons", []) + row.get("stress_metrics", {}).get("rejection_reasons", [])}
+                for asset, row in rows.items()}
             memory = {"brief": research.get("brief"), "hypothesis": state["hypothesis"],
                       "rejection_reason": research.get("rejection_reason"),
+                      "validation_feedback": research["validation_feedback"],
                       "training_results": research["training_results"]}
             with closing(sqlite3.connect(self.registry)) as db, db:
                 db.execute("INSERT OR REPLACE INTO research VALUES (?, ?)", (state["iteration_count"], json.dumps(memory)))
