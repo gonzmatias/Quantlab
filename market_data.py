@@ -117,7 +117,7 @@ def load_public_data(cache: Path, checkpoint=lambda: None, progress=lambda messa
     for asset, spec in ASSETS.items():
         checkpoint()
         progress(f"Descargando {spec['label']} · velas diarias públicas")
-        file = cache / f"{asset}_{start.date()}_{end.date()}_v1.json"
+        file = cache / f"{asset}_{start.date()}_{end.date()}_v2.json"
         if file.exists():
             snapshot = json.loads(file.read_text(encoding="utf-8"))
             frame, urls = pd.DataFrame(snapshot["candles"]), snapshot["urls"]

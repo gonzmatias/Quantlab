@@ -29,6 +29,8 @@ def strategy_name(hypothesis: dict) -> str:
     if not hypothesis:
         return "Hipótesis no disponible"
     family = hypothesis.get("family", "")
+    if hypothesis.get("program"):
+        return family + " · reglas compuestas"
     return f"{FAMILY_NAMES.get(family, family)} · {hypothesis.get('fast', '?')}/{hypothesis.get('slow', '?')}"
 
 
@@ -217,7 +219,7 @@ def write_report(report: dict, output: Path) -> None:
     lines += ["", report["next_action"], "", "## Limitaciones", ""] + [f"- {r}" for r in report["limitations"]]
     lines += ["", "## Investigación y procedencia", "", "```json",
               json.dumps(report.get("research", {}), ensure_ascii=False, indent=2), "```",
-              "", "## Comparación IS con la familia sin filtros", "", "```json",
+              "", "## Comparación de referencia en entrenamiento", "", "```json",
               json.dumps(report.get("quant_metrics", {}).get("baseline_comparison", {}), ensure_ascii=False, indent=2), "```"]
     lines += ["", "## Pruebas avanzadas", "", "```json", json.dumps({
         "quant": report.get("quant_metrics", {}).get("advanced_tests", {}),
@@ -236,7 +238,9 @@ def research_html(report):
         return "<h2>Investigación</h2><p>" + esc(research.get("summary", research.get("rejection_reason", "Sin ficha de investigación."))) + "</p>"
     labels = {"mechanism": "Mecanismo", "prediction": "Predicción", "falsification": "Criterio de descarte",
               "adaptation": "Adaptación", "parameter_reasoning": "Justificación de parámetros",
-              "compatibility_reason": "Compatibilidad"}
+              "compatibility_reason": "Compatibilidad", "research_approach": "Enfoque de investigación",
+              "change_from_previous": "Cambio frente a intentos anteriores", "contrary_evidence": "Evidencia contraria",
+              "data_requests": "Datos pendientes", "data_acquisition": "Fuentes de datos solicitadas"}
     parts = ["<h2>Investigación y fuentes</h2>"]
     parts += [f"<p><b>{label}:</b> {esc(brief.get(key, ''))}</p>" for key, label in labels.items()]
     for source in brief.get("sources", []):
@@ -245,7 +249,7 @@ def research_html(report):
         link = f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{title}</a>' if safe_source_url(url) else title
         parts.append(f"<p>{link} · {esc(source.get('source_kind', ''))}<br>{esc(source.get('finding', ''))}<br>Limitaciones: {esc(source.get('limitations', ''))}</p>")
     parts.append("<p>La trazabilidad de la URL no verifica por sí sola las afirmaciones de la fuente. La predicción del mecanismo requiere revisión; los filtros validan rendimiento simulado.</p>")
-    parts.append("<h3>Comparación IS con la familia sin filtros</h3><pre>" + esc(json.dumps(report.get("quant_metrics", {}).get("baseline_comparison", {}), ensure_ascii=False, indent=2)) + "</pre>")
+    parts.append("<h3>Comparación de referencia en entrenamiento</h3><pre>" + esc(json.dumps(report.get("quant_metrics", {}).get("baseline_comparison", {}), ensure_ascii=False, indent=2)) + "</pre>")
     return "".join(parts)
 
 

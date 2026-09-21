@@ -102,6 +102,38 @@ def walk_forward_test(data, h, cfg, split, simulate, checkpoint):
 
 def parameter_variants(h):
     """One-at-a-time ±20% shocks, schema bounds, only executable parameters."""
+    if h.get("program"):
+        from copy import deepcopy
+        from strategy_rules import RuleProgram
+        for index, parameter in enumerate(h["program"]["parameters"]):
+            seen = set()
+            for factor in (.8, 1.2):
+                delta = max(abs(parameter["value"]) * .2, 1 if parameter["integer"] else (parameter["upper"] - parameter["lower"]) * .1)
+                value = parameter["value"] + (-delta if factor < 1 else delta)
+                value = min(parameter["upper"], max(parameter["lower"], value))
+                value = int(round(value)) if parameter["integer"] else round(value, 8)
+                if value == parameter["value"] or value in seen:
+                    continue
+                seen.add(value)
+                candidate = deepcopy(h)
+                candidate["program"]["parameters"][index]["value"] = value
+                try:
+                    RuleProgram.model_validate(candidate["program"])
+                except ValueError:
+                    continue
+                key = "rule:" + parameter["name"]
+                candidate[key] = value
+                yield key, factor, candidate
+        for key in ("allocation", "stop_loss", "take_profit", "max_holding"):
+            for factor in (.8, 1.2):
+                value = h[key] * factor
+                if key == "max_holding":
+                    value = min(10000, max(1, int(round(value))))
+                elif key in ("allocation", "stop_loss"):
+                    value = min(1 if key == "allocation" else .999999, value)
+                if value != h[key]:
+                    yield key, factor, {**h, key: value}
+        return
     bounds = {"fast": (2, 40), "slow": (10, 150), "threshold": (.1, 3), "allocation": (.01, .95),
               "stop_loss": (.005, .15), "take_profit": (.01, .4), "max_holding": (2, 100)}
     inactive = set()

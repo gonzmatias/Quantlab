@@ -57,23 +57,25 @@ si dejan de responder; no se eluden verificaciones de navegador.
    de rechazo por activo; no recibe las series ni métricas numéricas OOS.
    El feedback de rechazo también hace adaptativa la búsqueda. SQLite conserva
    investigaciones y rechazos.
-   En modo real se rechaza repetir familia + régimen + confirmación, aunque cambien
-   parámetros. No se sustituyen duplicados por variantes automáticas; esa conducta
-   permanece únicamente en la demo.
-2. Prototipar: reglas y parámetros congelados para los cinco activos. Costos y
+   En modo real se proponen reglas compuestas con nombre libre, entrada y salida
+   independientes. Se deduplican reglas ejecutables y cada variante consume otra
+   prueba estadística; no hay un cupo de tres propuestas por familia en este motor.
+   Las familias anteriores se conservan para compatibilidad y demo.
+2. Prototipar: reglas y parámetros congelados para los activos objetivo. Costos y
    tamaños mínimos dependen del instrumento. El LLM no ejecuta código arbitrario.
 3. Validar por activo: backtest IS/OOS, DSR, regresión alfa/beta y walk-forward.
    Misma fecha de división temporal 70/30. Si falla un filtro, omite las pruebas
    posteriores y cambia de activo, sin modificar las reglas.
 4. Estresar ese mismo activo: $100 con costos x1/x2/x3, perturbaciones de parámetros,
    Monte Carlo, retraso de señales y concentración de beneficios. Después pasa al
-   siguiente activo. Evalúa los cinco antes de reformular; sólo acepta activos que
+   siguiente activo. Recorre los cinco antes de reformular (marca como omitidos los
+   no seleccionados o sin datos necesarios); sólo acepta activos que
    superaron todos los filtros. Las pruebas omitidas se distinguen de las fallidas.
 5. Generar: entre los aprobados en ambos filtros, selecciona mayor Sharpe OOS,
    luego menor drawdown y mayor retorno. Exporta el simulador del activo elegido.
 6. Reportar: conserva resultados de los cinco. Sin aprobación vuelve a investigar.
 
-### Pruebas obligatorias por activo
+### Pruebas por activo
 
 Los valores siguientes son criterios iniciales configurables, no garantías de éxito.
 No se reducen automáticamente durante la búsqueda. El capital de estrés sigue siendo
@@ -82,13 +84,13 @@ $100, sin apalancamiento y respetando los mínimos de cada instrumento.
 | Prueba | Método y aprobación |
 |---|---|
 | Backtest | 70/30 temporal, costos y mínimos reales del modelo; mantiene filtros IS/OOS, DSR, PF, operaciones y drawdown |
-| Regresión histórica | OLS de retornos netos OOS de estrategia contra retornos diarios del propio activo; alfa/beta, errores Newey–West (HAC), mínimo 60 observaciones; alfa − 1,645 × error estándar > 0 |
+| Regresión histórica | OLS de retornos netos OOS de estrategia contra retornos diarios del propio activo; alfa/beta, errores Newey–West (HAC), mínimo 60 observaciones; alfa − 1,645 × error estándar > 0; diagnóstico, no bloquea aprobación |
 | Walk-forward | 3 ventanas forward sin solapamiento; entrenamiento previo creciente, separación de max_holding barras; reglas congeladas, sin reoptimización; al menos 2/3 ventanas válidas, ganancias agregadas y DD dentro del límite |
 | Costos | $100 con costos x1/x2/x3; todos deben superar criterios de retorno, operaciones, DD y solvencia |
 | Parámetros | Cada parámetro ejecutable varía ±20%, uno por vez, dentro del esquema; mínimo 4 variantes y ≥80% con retorno/Sharpe positivos, operaciones suficientes, sin quiebra y DD aceptable |
 | Monte Carlo | 1.000 trayectorias por bloque de 5, 10 y 20 barras (3.000 total); en cada grupo P(ganancia) ≥90%, DD percentil 95 ≤límite y ruina operativa ≤1% |
 | Retraso | Señales de entrada y salida por condición retrasadas una barra adicional; stops y límites de tenencia mantienen su lógica; exige retorno/Sharpe positivos, operaciones y DD válidos |
-| Concentración | Anula los retornos de los cinco mejores días positivos; el rendimiento compuesto restante debe seguir positivo |
+| Concentración | Anula los retornos de los cinco mejores días positivos; el rendimiento compuesto restante debe seguir positivo; diagnóstico, no bloquea aprobación |
 
 La regresión es explicativa, no un predictor de precios; supone tasa libre de riesgo
 cero. El umbral z es asintótico, unilateral, y no corrige por sí solo la selección
@@ -108,8 +110,8 @@ es una sensibilidad de retornos, no un segundo simulador de ejecución.
 
 El motor continúa hasta encontrar un aprobado, pulsar Detener, un error operativo o
 alcanzar un límite opcional configurado. No garantiza encontrarlo. Una ganancia sola
-no habilita la exportación: se comprueba explícitamente que estén aprobadas todas las
-pruebas avanzadas. Los filtros usan el histórico disponible y no sustituyen datos
+no habilita la exportación: se comprueba explícitamente que estén aprobadas las pruebas obligatorias de walk-forward, parámetros,
+Monte Carlo y retraso. Regresión y concentración son diagnósticas. Los filtros usan el histórico disponible y no sustituyen datos
 posteriores independientes.
 
 Referencias metodológicas: [covarianza HAC/Newey–West](https://www.statsmodels.org/dev/generated/statsmodels.stats.sandwich_covariance.cov_hac.html)
@@ -129,27 +131,81 @@ no la veracidad de las conclusiones: el análisis de calidad, compatibilidad sem
 y lectura de fuentes lo realiza el modelo y requiere revisión humana. Las fuentes
 actuales también pueden incorporar conocimiento posterior al período histórico.
 
-La compatibilidad exige OHLC diario, activos disponibles, long-only y ausencia de
-apalancamiento. Ideas que declaren necesitar volumen, noticias, libro de órdenes,
-frecuencia intradía u otros campos se rechazan antes del backtest. La ficha declara
-activos objetivo; se siguen probando los cinco para evaluar transferencia.
+La investigación puede explorar mecanismos y fuentes fuera de los indicadores de
+precios. La ejecución disponible sigue siendo diaria, sobre los activos cargados,
+long-only y sin apalancamiento. El catálogo muestra cobertura y estadísticas sólo
+sobre entrenamiento. Incluye OHLC, volumen real cuando el proveedor lo entrega,
+calendario, columnas cruzadas `market_<activo>_<campo>` y series externas.
+Los activos fuera del objetivo o sin los campos necesarios se marcan omitidos.
+Una idea que necesita otro tipo de ejecución queda documentada como incompatible,
+con sus necesidades de datos; no se transforma silenciosamente en una regla distinta.
 
-El motor conserva ocho familias y añade combinaciones acotadas: régimen de tendencia
-(cierre sobre SMA lenta), baja volatilidad (desviación de retornos rápida inferior
-a lenta, ambas hasta la barra anterior), y confirmación de cierre en el cuarto superior
-del rango diario. Se aplican tanto al entrar como al mantener la posición. Las reglas
-no representables deben declararse incompatibles, no traducirse silenciosamente.
-Cambiar el texto de una explicación no evita la deduplicación estructural.
+El motor real admite `program` con expresiones de entrada y salida independientes,
+parámetros nombrados y un nombre de mecanismo libre. No hay una lista cerrada de
+familias: pueden combinarse relaciones entre series, ventanas, rangos, retornos,
+correlaciones, cuantiles, calendario y condiciones. Las ocho familias anteriores
+siguen funcionando como formato heredado. La referencia IS de un programa compuesto
+mantiene la gestión de riesgo y elimina las señales; es diagnóstica, no causal.
 
-Se compara cada propuesta con su familia sin filtros, mismos parámetros y costos,
-en entrenamiento. Las diferencias de retorno y Sharpe son diagnósticas, no una prueba
-causal ni un nuevo filtro de aprobación. Si no se usan filtros, la diferencia será cero.
-La predicción y la refutación quedan documentadas; no hay un evaluador automático
-general de afirmaciones científicas. No se promete que cada propuesta sea original.
+Las expresiones se interpretan como datos mediante un AST validado; no se ejecuta
+Python generado. Se admiten operaciones aritméticas, comparaciones, and/or/not y
+`col`, `lag`, `change`, `pct`, `sma`, `ema`, `std`, `lowest`, `highest`, `total`, `rank`,
+`quantile`, `corr`, `abs`, `log`, `sqrt`, `where`. Todas las ventanas miran hacia atrás.
+Esto amplía las hipótesis representables, pero no implementa cualquier algoritmo,
+entrenamiento ML, microestructura intradía ni cortos. Los límites de tamaño de
+expresión y ventanas son controles de recursos del intérprete.
+
+Cada investigación debe justificar el enfoque elegido, qué conserva o cambia
+respecto de la memoria y la evidencia contraria. No se fuerza una rotación aleatoria.
+El contexto incorpora diagnósticos de entrenamiento: asociaciones con retornos desde
+la próxima apertura a 1/5/20 barras, cuartiles de características y calendario.
+Se etiquetan como exploratorios, brutos y con ventanas solapadas; no son pruebas de
+significancia ni evidencia independiente y no incluyen valores posteriores al corte IS.
+El objetivo es evaluar mecanismos con fundamento; variar la narrativa no constituye
+otra estrategia. La predicción y refutación siguen requiriendo revisión científica:
+los filtros automáticos verifican rendimiento y robustez simulados.
+
+### Incorporación de datos de investigación
+
+El volumen BTC ya no se descarta al validar las velas; los snapshots pasan a v2.
+Las columnas de otro mercado se incorporan desde el día siguiente a su vela y caducan
+tras siete días, evitando asumir cierres simultáneos entre mercados. Calendario y
+campos adicionales numéricos se conservan sin inventar OHLC ni volumen.
+
+El investigador puede solicitar `data_acquisition` con CSV públicos HTTPS cuya URL
+esté en las fuentes de la búsqueda. Debe identificar la columna numérica, la fecha
+real de publicación/disponibilidad y la tolerancia de antigüedad. Se descargan hasta
+8 MB por fuente, con timeout, comprobación de destino público y de redirecciones.
+Se guarda un snapshot con hash y procedencia dentro de la ejecución. Si el archivo,
+esquema o disponibilidad no son válidos, se rechaza el intento con diagnóstico.
+No se infiere una fecha de publicación a partir del período económico de una serie.
+La semántica temporal declarada por la fuente/modelo todavía requiere revisión.
+
+También se cargan automáticamente archivos `outputs/research_data/*.json` con este
+contrato para fuentes macro, eventos, on-chain u otros valores numéricos:
+
+```json
+{
+  "name": "example_release",
+  "source_url": "https://example.org/data",
+  "availability_description": "Fecha real en que se publicó cada valor, con revisiones fechadas por separado.",
+  "max_age_days": 40,
+  "observations": [{"available_at": "2020-01-15T13:30:00Z", "value": 1.2}]
+}
+```
+
+El campo será `external_example_release`. Sólo entra después de su disponibilidad,
+nunca retroactivamente ni más allá de su antigüedad declarada. Los archivos locales
+se copian a la ejecución para reproducibilidad. Los simuladores exportados aceptan
+`--research-data` y descargan los mercados cruzados necesarios; las series externas
+se leen del snapshot, sin refrescar valores retrospectivamente. Para datos nuevos
+hay que aportar observaciones nuevas y respetar sus fechas de disponibilidad.
+Fuentes con credenciales, formatos distintos de CSV, datos sin historial de publicación
+y modalidades de ejecución no implementadas quedan como necesidades documentadas.
 
 Dossiers: `outputs/<ejecución>/research/attempt_XX.json`; también se incluyen en
-reportes HTML/JSON/Markdown y en el panel, con fuentes enlazadas. La memoria pertenece
-a cada ejecución. Se mantiene el esquema 70/30 y el OOS adaptativo existente:
+reportes HTML/JSON/Markdown y en el panel, con fuentes enlazadas. La memoria SQLite persiste
+entre ejecuciones y separa demo de investigación real. Se mantiene el esquema 70/30 y el OOS adaptativo existente:
 **todavía se necesitan datos posteriores independientes antes de usar una estrategia**.
 La nueva etapa mejora la formulación, no convierte la búsqueda continua en una prueba final.
 
@@ -233,7 +289,8 @@ constituye automáticamente una nueva validación.
 - IS/OOS positivos, Sharpe positivo, degradación <=20%, DD <=25%, 30 operaciones
   por segmento, PF OOS >=1,2 (o ninguna pérdida), y 2/3 ventanas positivas.
   Ventanas con reglas congeladas, sin reentrenamiento por ventana. Además se exigen
-  regresión, walk-forward con separación y las pruebas de robustez descritas arriba.
+  walk-forward con separación, parámetros, Monte Carlo y retraso de señales;
+  regresión y concentración son diagnósticas.
 - Se reutiliza OOS adaptativamente. Una búsqueda ilimitada no garantiza hallar
   rentabilidad; los ajustes no reemplazan datos posteriores independientes.
 - Long-only, sin apalancamiento. Señales y stops al cierre, ejecución en apertura

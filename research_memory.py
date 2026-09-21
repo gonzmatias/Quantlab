@@ -27,9 +27,9 @@ class ResearchMemory:
             if db.execute("SELECT 1 FROM experiments WHERE scope=? AND signature=?", (scope, signature)).fetchone():
                 return None
             rows = db.execute("SELECT outcome FROM experiments WHERE scope=? AND structure=?", (scope, structure)).fetchall()
-            if len(rows) >= limit:
+            if limit is not None and len(rows) >= limit:
                 raise ValueError("Presupuesto agotado: máximo tres configuraciones por estructura y contexto")
-            if any(row[0] != "REJECTED" for row in rows):
+            if limit is not None and any(row[0] != "REJECTED" for row in rows):
                 raise ValueError("La estructura tiene una evaluación pendiente o aprobada; no corresponde reformularla")
             base = db.execute("SELECT COALESCE(SUM(slots), 0) FROM experiments").fetchone()[0]
             db.execute("INSERT INTO experiments(run,attempt,scope,signature,structure,hypothesis,dossier,slots) VALUES (?,?,?,?,?,?,?,?)",

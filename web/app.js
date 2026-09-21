@@ -21,7 +21,7 @@ const money = (v) => new Intl.NumberFormat("es-PY",{style:"currency",currency:"U
 function renderResearch(report) {
   const research = report.research || {}, brief = research.brief;
   if (!brief) return `<h4 class="report-section-title">Investigación</h4><p>${escapeHtml(research.summary || research.rejection_reason || 'Sin ficha de investigación.')}</p>`;
-  const labels = {mechanism:'Mecanismo',prediction:'Predicción',falsification:'Criterio de descarte',adaptation:'Adaptación',parameter_reasoning:'Justificación de parámetros',compatibility_reason:'Compatibilidad'};
+  const labels = {mechanism:'Mecanismo',prediction:'Predicción',falsification:'Criterio de descarte',adaptation:'Adaptación',parameter_reasoning:'Justificación de parámetros',compatibility_reason:'Compatibilidad',research_approach:'Enfoque de investigación',change_from_previous:'Cambio frente a intentos anteriores',contrary_evidence:'Evidencia contraria',data_requests:'Datos pendientes'};
   const sources = (brief.sources || []).map(source => {
     let safe = false;
     try { const url = new URL(source.url); safe = ['https:','http:'].includes(url.protocol) && !url.username && !url.password; } catch {}
@@ -29,7 +29,7 @@ function renderResearch(report) {
     return `<li>${safe ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${title}</a>` : title}<p>${escapeHtml(source.finding)}</p><small>${escapeHtml(source.source_kind)} · ${escapeHtml(source.limitations)}</small></li>`;
   }).join('');
   const comparison = report.quant_metrics?.baseline_comparison;
-  return `<h4 class="report-section-title">Investigación y fuentes</h4>${Object.entries(labels).map(([key,label])=>`<p><strong>${label}:</strong> ${escapeHtml(brief[key])}</p>`).join('')}<ul>${sources}</ul><p>Una URL trazable no verifica la afirmación publicada. Los filtros del simulador no certifican el mecanismo.</p>${comparison ? `<p>Comparación de entrenamiento con la familia sin filtros: diferencia de retorno ${pct(comparison.net_return_difference)}; diferencia de Sharpe ${num(comparison.sharpe_difference)}. Diagnóstico, no criterio de aprobación.</p>` : ''}`;
+  return `<h4 class="report-section-title">Investigación y fuentes</h4>${Object.entries(labels).map(([key,label])=>`<p><strong>${label}:</strong> ${escapeHtml(brief[key])}</p>`).join('')}<ul>${sources}</ul><p>Una URL trazable no verifica la afirmación publicada. Los filtros del simulador no certifican el mecanismo.</p>${comparison ? `<p>Comparación con la referencia en entrenamiento: diferencia de retorno ${pct(comparison.net_return_difference)}; diferencia de Sharpe ${num(comparison.sharpe_difference)}. Diagnóstico, no criterio de aprobación.</p>` : ''}`;
 }
 function error(message) { $("formError").textContent = message; $("formError").classList.toggle("hidden", !message); }
 async function api(path, payload) {
@@ -204,6 +204,9 @@ async function loadReport(attempt, scroll) {
     const h=report.hypothesis, ok=report.outcome==="APPROVED";
     const parameters = h.family ? [['Asignación',pct(h.allocation)],['Stop nominal',pct(h.stop_loss)],['Objetivo nominal',pct(h.take_profit)],['Tenencia máx.',`${h.max_holding} barras`]] : [];
     $("reportContent").innerHTML=`<div class="report-summary ${ok?'success':''}"><span class="symbol">${ok?'✓':'↻'}</span><div><h4>${ok?'Filtros superados · aprobado en simulación':'Intento rechazado · diagnóstico disponible'}</h4><p>${escapeHtml(report.summary)} ${escapeHtml(report.next_action)}</p></div></div><p class="report-copy">${escapeHtml(h.rationale || 'No se obtuvo una hipótesis válida en este intento.')}</p><div class="params">${parameters.map(([key,value])=>`<span>${escapeHtml(key)} <b>${escapeHtml(value)}</b></span>`).join('')}</div><h4 class="report-section-title">Resultados frente a los criterios de aprobación</h4><div class="check-grid">${report.checks.map(c=>`<div class="check ${c.required===false?'skip':c.passed===false?'fail':c.passed===null?'skip':''}"><span class="indicator">${c.required===false?'i':c.passed===true?'✓':c.passed===false?'×':'—'}</span><div><strong>${escapeHtml(c.label)}</strong><p>${escapeHtml(c.value)}</p><small>${escapeHtml(c.requirement)}</small></div></div>`).join('')}</div>${report.rejection_reasons.length?`<h4 class="report-section-title">Motivos de rechazo</h4><ul class="reasons">${report.rejection_reasons.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul>`:''}<div class="limitations">${report.limitations.map(l=>escapeHtml(l)).join('<br>')}</div>`;
+    if (h.program) {
+      $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Reglas investigadas</h4><p><strong>Entrada:</strong> <code>${escapeHtml(h.program.entry)}</code></p><p><strong>Salida:</strong> <code>${escapeHtml(h.program.exit)}</code></p><div class="params">${h.program.parameters.map(p=>`<span>${escapeHtml(p.name)} <b>${escapeHtml(p.value)}</b></span>`).join('')}</div>`);
+    }
     document.querySelectorAll("#historyRows tr[data-attempt]").forEach(row=>row.classList.toggle("selected",Number(row.dataset.attempt)===attempt));
     const assessment = report.assessment || {};
     $("reportContent").insertAdjacentHTML("afterbegin", `<p><strong>Rentabilidad histórica:</strong> ${escapeHtml(assessment.historical_profitability || 'NO EVALUADA')} · <strong>Robustez:</strong> ${escapeHtml(assessment.robustness || 'NO EVALUADA')} · <strong>Datos nuevos:</strong> ${escapeHtml(assessment.independent_validation || 'PENDIENTE')}</p>`);

@@ -2,6 +2,7 @@
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
+from research_data import DataAcquisition
 
 
 class SourceEvidence(BaseModel):
@@ -28,6 +29,11 @@ class ResearchBrief(BaseModel):
     requires_leverage: bool
     compatible: bool
     compatibility_reason: str = Field(min_length=30)
+    research_approach: str = Field(default="", description="Método elegido para investigar esta ventaja")
+    change_from_previous: str = Field(default="", description="Qué se conserva, refuta o cambia y por qué")
+    contrary_evidence: str = Field(default="", description="Evidencia que contradice el mecanismo")
+    data_requests: list[str] = Field(default_factory=list, description="Datos faltantes: campo, fuente, frecuencia, disponibilidad histórica y revisiones")
+    data_acquisition: list[DataAcquisition] = Field(default_factory=list, description="CSV públicos con fecha real de disponibilidad: URL presente en fuentes, columna de valor y de publicación. Nunca usar fecha de observación macro como publicación.")
 
 
 def safe_source_url(url):
@@ -66,13 +72,15 @@ def extract_web_evidence(response):
             "search_actions": calls, "summary": "\n".join(text)}
 
 
-def validate_brief(brief, evidence, assets):
+def validate_brief(brief, evidence, assets, available_fields=None):
     known = {source["url"] for source in evidence["sources"]}
     if any(source.url not in known for source in brief.sources):
         raise ValueError("La propuesta cita una URL que no apareció en la búsqueda web")
     if not brief.compatible:
         raise ValueError("Idea incompatible: " + brief.compatibility_reason)
-    missing = set(brief.required_fields) - {"timestamp", "open", "high", "low", "close"}
+    available = ({"timestamp", "open", "high", "low", "close"} if available_fields is None else
+                 set.intersection(*(set(available_fields.get(asset, set())) for asset in brief.target_assets)))
+    missing = set(brief.required_fields) - available
     if missing or brief.timeframe != "1d" or brief.requires_shorting or brief.requires_leverage:
         raise ValueError("La idea requiere datos, frecuencia, cortos o apalancamiento no disponibles")
     if not set(brief.target_assets).issubset(assets):
