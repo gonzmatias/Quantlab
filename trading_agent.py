@@ -34,8 +34,9 @@ from report_agent import build_report, strategy_name, write_report
 from research import ResearchBrief, extract_web_evidence, validate_brief
 from research_memory import ResearchMemory, diagnose
 from mql5_export import export_mql5
-from strategy_rules import RuleProgram, RULE_HELP, program_signals, program_requirements
+from strategy_rules import validate_tunable_program, RuleProgram, RULE_HELP, program_signals, program_requirements
 from research_data import enrich_datasets, load_evidence_series, data_catalogue, acquire_evidence, training_diagnostics
+from experiment_protocol import digest, partition, HoldoutLedger, benchmark_test, evaluate_frozen, frozen_candidate
 from validation import (regression_test, walk_forward_test, parameter_stress, monte_carlo_test,
                         concentration_test, skipped, viable, summarize, validation_complete, VALIDATION_POLICY)
 
@@ -43,6 +44,7 @@ LOGGER = logging.getLogger("quant_agent")
 
 
 class AgentState(TypedDict):
+    final_validation: dict
     research: dict
     hypothesis: dict
     prototype_code: str
@@ -110,7 +112,9 @@ class ResearchCandidate(BaseModel):
 
 @dataclass(frozen=True)
 class Settings:
-    max_iterations: int = 0  # 0 = sin límite; positivo = límite opcional para CLI/tests.
+    max_iterations: int = 30  # Presupuesto de búsqueda; 0 permitido sólo en demo.
+    capital: float = 10000.0
+    final_min_trades: int = 20
     dsr_trial_budget: int = 100  # Mínimo estadístico, no límite de ejecución.
     bars_per_year: int = 252
     commission_rate: float = 0.001
@@ -134,9 +138,11 @@ class Settings:
     monte_carlo_profit_min: float = .9
 
     def __post_init__(self):
-        for field in ("max_iterations", "dsr_trial_budget", "bars_per_year", "min_trades", "bootstrap_samples", "seed", "walk_forward_folds", "monte_carlo_samples"):
+        for field in ("final_min_trades", "max_iterations", "dsr_trial_budget", "bars_per_year", "min_trades", "bootstrap_samples", "seed", "walk_forward_folds", "monte_carlo_samples"):
             if type(getattr(self, field)) is not int:
                 raise ValueError(f"{field} debe ser un número entero")
+        if self.capital <= 0 or self.final_min_trades < 1:
+            raise ValueError("Capital y operaciones finales deben ser positivos")
         if self.max_iterations < 0 or self.dsr_trial_budget < 1:
             raise ValueError("max_iterations debe ser >= 0 y dsr_trial_budget >= 1")
         values = asdict(self)
@@ -373,7 +379,7 @@ def main():
     parser.add_argument("--start", default="2018-01-01")
     parser.add_argument("--end", default=None, help="Fecha final exclusiva UTC")
     parser.add_argument("--asset", choices=list(ASSETS), default=PAYLOAD["notes"].get("asset"))
-    parser.add_argument("--capital", type=float, default=100.0)
+    parser.add_argument("--capital", type=float, default=PAYLOAD["settings"]["capital"])
     parser.add_argument("--research-data", type=Path, default=Path(PAYLOAD["notes"].get("research_data_directory", "outputs/research_data")))
     args = parser.parse_args()
     if not args.asset:
@@ -410,7 +416,7 @@ if __name__ == "__main__":
 
 
 def initial_state() -> AgentState:
-    return {"research": {}, "hypothesis": {}, "prototype_code": "", "quant_metrics": {}, "stress_metrics": {},
+    return {"final_validation": {}, "research": {}, "hypothesis": {}, "prototype_code": "", "quant_metrics": {}, "stress_metrics": {},
             "production_code": "", "mql5_export": {}, "iteration_count": 0, "logs": [], "status": "RESEARCHING", "history": [],
             "strategy_name": "Preparando investigación", "current_stage": "idle", "lifecycle": "IDLE",
             "charts": {}, "reports": [], "latest_report": {}, "report_count": 0,
@@ -508,6 +514,24 @@ class TradingAgent:
                  stop_requested=None, api_key: str | None = None, market_metadata=None, asset_settings=None):
         self.datasets = {k: validate_data(v) for k, v in data.items()} if isinstance(data, dict) else {}
         self.data, self.cfg, self.output, self.demo = validate_data(next(iter(self.datasets.values())) if self.datasets else data), cfg, output, demo
+        self.full_datasets = {k: v.copy() for k, v in (self.datasets or {"CUSTOM": self.data}).items()}
+        self.holdout_start = None
+        if not demo:
+            if cfg.max_iterations <= 0:
+                raise ValueError("La investigación real requiere un presupuesto positivo de intentos")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            self.holdout_ledger = HoldoutLedger(output.parent / "holdout_ledger.sqlite3")
+            discovery, training_end, cutoff = partition(self.full_datasets)
+            previous_end = self.holdout_ledger.latest_end()
+            if previous_end is not None:
+                cutoff = max(cutoff, previous_end + pd.Timedelta(nanoseconds=1))
+                discovery = {a: f[f.timestamp < cutoff].reset_index(drop=True) for a, f in self.full_datasets.items()}
+                training_end = max(f.timestamp.iloc[0] for f in discovery.values()) + (cutoff - max(f.timestamp.iloc[0] for f in discovery.values())) * .75
+            if any((f.timestamp >= cutoff).sum() < 120 for f in self.full_datasets.values()):
+                raise ValueError("Reserva final ya consumida: esperar al menos 120 barras nuevas; cambiar costos o reiniciar no la restaura")
+            self.holdout_start = cutoff
+            self.datasets = discovery if self.datasets else {}
+            self.data = next(iter(discovery.values()))
         self.evidence_data, self.evidence_metadata = load_evidence_series(output.parent / "research_data") if not demo else ({}, {})
         self.raw_datasets = self.datasets or {"CUSTOM": self.data}
         enriched = enrich_datasets(self.raw_datasets, self.evidence_data)
@@ -519,6 +543,8 @@ class TradingAgent:
         self.asset_settings = asset_settings or {}
         self.quant_trial_index = None
         self.split_date = (self.data.timestamp.iloc[0] + (self.data.timestamp.iloc[-1] - self.data.timestamp.iloc[0]) * .7) if self.datasets else None
+        if not demo:
+            self.split_date = training_end
         self.on_event = on_event
         self.stop_requested = stop_requested or (lambda: False)
         self.latest_state = initial_state()
@@ -674,7 +700,7 @@ class TradingAgent:
                         self.check_stop()
                         end = int((frame.timestamp < self.split_date).sum()) if self.split_date is not None else int(len(frame)*.7)
                         cfg = market_settings(self.base_cfg, asset, self.asset_settings.get(asset)) if self.datasets else self.base_cfg
-                        result = backtest(frame.iloc[:end], rule, cfg, 10000, 150, end, checkpoint=self.check_stop)
+                        result = backtest(frame.iloc[:end], rule, cfg, cfg.capital, 150, end, checkpoint=self.check_stop)
                         scores.append(result["sharpe"] if result["trades"] >= cfg.min_trades else -1000.0)
                     return float(np.median(scores))
                 candidate_score, baseline_score = training_score(h.model_dump()), training_score(previous[0][0])
@@ -696,7 +722,7 @@ class TradingAgent:
     def researcher_node(self, state: AgentState) -> dict:
         self.variant_screen = {}
         attempt = state["iteration_count"] + 1
-        reset = {"iteration_count": attempt, "status": "RESEARCHING", "hypothesis": {}, "research": {},
+        reset = {"final_validation": {}, "iteration_count": attempt, "status": "RESEARCHING", "hypothesis": {}, "research": {},
                  "prototype_code": "", "production_code": "", "mql5_export": {}, "quant_metrics": {}, "stress_metrics": {},
                  "charts": {}, "latest_report": {}, "strategy_name": "Generando una nueva hipótesis",
                  "asset_results": {}, "selected_asset": "", "active_asset": "", "asset_progress": {}}
@@ -733,6 +759,8 @@ class TradingAgent:
                     "No confundas predicción científica con filtros generales de rentabilidad. "
                     "fast/slow/threshold/regime/confirmation son campos heredados y no definen program. "
                     "No introduzcas filtros sin fundamento ni ajustes con resultados de validación. "
+                    "Todo número de entrada/salida, incluidos 0 y 1, debe ser un parámetro nombrado. "
+                    "Los rangos deben permitir perturbaciones de al menos 20% o una unidad para enteros. "
                     + RULE_HELP +
                     f" Contexto IS: {json.dumps(context)}. Dossier: {json.dumps(evidence)}. "
                     f"Memoria: {json.dumps(recent)}")
@@ -757,6 +785,7 @@ class TradingAgent:
                 validate_brief(candidate.brief, evidence, set(context),
                                {a: set(c["available_fields"]) for a, c in context.items()})
                 if candidate.hypothesis.program:
+                    validate_tunable_program(candidate.hypothesis.program.model_dump())
                     needed, warmup = program_requirements(candidate.hypothesis.program.model_dump())
                     for asset in candidate.brief.target_assets:
                         if needed - set(context[asset]["available_fields"]):
@@ -820,16 +849,16 @@ class TradingAgent:
             return {}
         split = self.split_index()
         h, cfg = state["hypothesis"], self.cfg
-        ins = backtest(self.data, h, cfg, 10000, h["slow"], split, checkpoint=self.check_stop)
+        ins = backtest(self.data, h, cfg, cfg.capital, h["slow"], split, checkpoint=self.check_stop)
         baseline_rule = {**h, "program": {"entry": "True", "exit": "False", "parameters": []}} if h.get("program") else {**h, "regime": "none", "confirmation": "none"}
         baseline = backtest(self.data, baseline_rule, cfg,
-                            10000, h["slow"], split, checkpoint=self.check_stop)
-        oos = backtest(self.data, h, cfg, 10000, split, checkpoint=self.check_stop)
+                            cfg.capital, h["slow"], split, checkpoint=self.check_stop)
+        oos = backtest(self.data, h, cfg, cfg.capital, split, checkpoint=self.check_stop)
         trial = self.quant_trial_index or (state["iteration_count"] if self.demo else self.trial_base + 1)
         dsr = deflated_sharpe(oos["returns"], cfg, trial, checkpoint=self.check_stop)
         degradation = max(0.0, 1 - oos["sharpe"] / ins["sharpe"]) if ins["sharpe"] > 0 else 1.0
         boundaries = np.linspace(split, len(self.data), 4, dtype=int)
-        folds = [compact(backtest(self.data, h, cfg, 10000, int(a), int(b), checkpoint=self.check_stop))
+        folds = [compact(backtest(self.data, h, cfg, cfg.capital, int(a), int(b), checkpoint=self.check_stop))
                  for a, b in zip(boundaries[:-1], boundaries[1:])]
         reasons = []
         if dsr["dsr"] < cfg.dsr_probability_min or dsr["dsr_z"] <= cfg.dsr_z_min:
@@ -846,6 +875,10 @@ class TradingAgent:
             reasons.append("Profit Factor OOS < 1.2")
         if sum(f["net_return"] > 0 for f in folds) < 2:
             reasons.append("Menos de 2/3 ventanas progresivas positivas")
+        benchmark = benchmark_test(self.data, h, cfg, split,
+                                   lambda *a, **kw: backtest(*a, **kw, checkpoint=self.check_stop))
+        if not benchmark["passed"]:
+            reasons.append(benchmark["reason"])
         advanced = {"regression": skipped("Requiere aprobar backtest básico"),
                     "walk_forward": skipped("Requiere aprobar backtest básico")}
         if not reasons:
@@ -855,7 +888,7 @@ class TradingAgent:
             if not advanced["walk_forward"]["passed"]:
                 reasons.append(advanced["walk_forward"]["reason"])
         metrics = {"passed": not reasons, "in_sample": compact(ins), "out_of_sample": compact(oos),
-                   "advanced_tests": advanced,
+                   "advanced_tests": advanced, "benchmark": benchmark,
                    "baseline_in_sample": compact(baseline),
                    "baseline_comparison": {"net_return_difference": ins["net_return"] - baseline["net_return"],
                                            "sharpe_difference": ins["sharpe"] - baseline["sharpe"],
@@ -864,19 +897,19 @@ class TradingAgent:
                    "oos_is_adaptive": True, "rejection_reasons": reasons}
         history = (state["history"] + [{"attempt": state["iteration_count"], "hypothesis": h, "quant_metrics": metrics}])[-100:]
         return {"quant_metrics": metrics, "history": history,
-                "charts": {"oos": chart_series(oos, self.data, split, "Capital OOS · inicio $10.000")},
+                "charts": {"oos": chart_series(oos, self.data, split, f"Capital validación · inicio ${cfg.capital:,.2f}")},
                 "status": "REJECTED" if reasons else "RESEARCHING",
                 "logs": self.log(state, "Quant: " + ("; ".join(reasons) or "APROBADO"))}
 
     def _stress_single(self, state: AgentState) -> dict:
         start = self.split_index()
         raw = {str(mult): backtest(self.data, state["hypothesis"], self.cfg,
-                                  100.0, start, cost_multiplier=mult, checkpoint=self.check_stop) for mult in (1, 2, 3)}
+                                  self.cfg.capital, start, cost_multiplier=mult, checkpoint=self.check_stop) for mult in (1, 2, 3)}
         scenarios = {name: compact(result) for name, result in raw.items()}
         charts = dict(state.get("charts", {}))
         for name, result in raw.items():
             if "equity" in result:
-                charts[f"stress_{name}"] = chart_series(result, self.data, start, f"Estrés $100 · costos ×{name}")
+                charts[f"stress_{name}"] = chart_series(result, self.data, start, f"Estrés ${self.cfg.capital:,.2f} · costos ×{name}")
         reasons = []
         for name, result in scenarios.items():
             if (result["bankrupt"] or result["max_drawdown"] > self.cfg.max_drawdown
@@ -895,7 +928,7 @@ class TradingAgent:
             if not robustness["monte_carlo"]["passed"]:
                 reasons.append(robustness["monte_carlo"]["reason"])
         if not reasons:
-            delayed = backtest(self.data, state["hypothesis"], self.cfg, 100, start,
+            delayed = backtest(self.data, state["hypothesis"], self.cfg, self.cfg.capital, start,
                                signal_delay=1, checkpoint=self.check_stop)
             passed = bool(viable(delayed, self.cfg))
             robustness["signal_delay"] = {"passed": passed, "status": "PASSED" if passed else "FAILED",
@@ -903,7 +936,7 @@ class TradingAgent:
                                           "reason": "Retraso de señales aprobado" if passed else "Fracasa con un día adicional de retraso de señales"}
             if not passed:
                 reasons.append(robustness["signal_delay"]["reason"])
-        metrics = {"initial_capital": 100, "passed": not reasons, "scenarios": scenarios,
+        metrics = {"initial_capital": self.cfg.capital, "passed": not reasons, "scenarios": scenarios,
                    "robustness_tests": robustness, "rejection_reasons": reasons}
         history = [dict(row) for row in state["history"]]
         history[-1]["stress_metrics"] = metrics
@@ -964,6 +997,14 @@ class TradingAgent:
                                "quant_metrics": {"passed": False, "status": "SKIPPED", "rejection_reasons": ["Fuera de activos objetivo o faltan datos requeridos"]},
                                "stress_metrics": {}, "charts": {}}
                 continue
+            training = self.data.iloc[:self.split_index()]
+            h = state["hypothesis"]
+            minimum = max(self.cfg.min_notional, self.cfg.quantity_step * float(training.open.min()))
+            if not self.demo and self.cfg.capital * h["allocation"] < minimum * (1 + self.cfg.commission_rate) + self.cfg.fixed_commission:
+                rows[asset] = {"asset": asset, "metadata": self.market_metadata.get(asset, {}), "settings": asdict(self.cfg),
+                               "quant_metrics": {"passed": False, "status": "SKIPPED", "rejection_reasons": ["Capital insuficiente para el mínimo del instrumento en entrenamiento"]},
+                               "stress_metrics": {}, "charts": {}}
+                continue
             result = self._quant_single({**state, "logs": logs})
             rows[asset] = {"asset": asset, "metadata": self.market_metadata.get(asset, {}),
                            "settings": asdict(self.cfg), "quant_metrics": result["quant_metrics"],
@@ -1003,11 +1044,52 @@ class TradingAgent:
         result["status"] = "RESEARCHING" if result["stress_metrics"].get("passed") else "REJECTED"
         return result
 
+    def final_validator_node(self, state):
+        if self.demo:
+            return {"status": "REJECTED", "logs": self.log(state, "Demo: reserva final no disponible")}
+        asset = state.get("selected_asset") or "CUSTOM"
+        if not validation_complete(state["quant_metrics"], state["stress_metrics"]):
+            raise RuntimeError("La reserva final requiere todos los filtros de descubrimiento")
+        frozen = frozen_candidate(state["hypothesis"], self.cfg, asset, self.holdout_start,
+                                  self.full_datasets[asset].timestamp.iloc[-1])
+        folder = self.output / "candidate_data"
+        folder.mkdir(exist_ok=True)
+        snapshots = {}
+        for name, frame in self.full_datasets.items():
+            raw = frame.to_json(orient="records", date_format="iso", double_precision=15).encode()
+            (folder / (name + ".json")).write_bytes(raw)
+            snapshots[name] = hashlib.sha256(raw).hexdigest()
+        frozen.pop("sha256")
+        frozen["snapshot_hashes"] = snapshots
+        frozen["evidence_hashes"] = {name: hashlib.sha256(Path(item["file"]).read_bytes()).hexdigest() for name, item in self.evidence_metadata.items()}
+        frozen["sha256"] = digest(frozen)
+        (self.output / "candidate.json").write_text(json.dumps(frozen, indent=2), encoding="utf-8")
+        start_date = self.holdout_start
+        end_date = max(f.timestamp.iloc[-1] for f in self.full_datasets.values())
+        if not self.holdout_ledger.reserve(start_date, end_date, self.run_id, frozen["sha256"]):
+            result = {"passed": False, "status": "CONSUMED", "reason": "Reserva consumida por otro experimento; no se vuelve a consultar"}
+        else:
+            # Enrichment occurs only after freezing and consuming the final interval.
+            full = enrich_datasets(self.full_datasets, self.evidence_data)[asset]
+            start = int(full.timestamp.searchsorted(start_date))
+            result = evaluate_frozen(full, state["hypothesis"], self.cfg, start, self.check_stop)
+            result["candidate_sha256"] = frozen["sha256"]
+            if result["passed"]:
+                self.data = full
+        (self.output / "final_validation.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        return {"final_validation": result, "status": "FINAL_PASSED" if result["passed"] else "FINAL_REJECTED",
+                "logs": self.log(state, result["reason"])}
+
+    def after_final(self, state):
+        return "production_coder_node" if state.get("final_validation", {}).get("passed") else "reporter_node"
+
     def production_coder_node(self, state: AgentState) -> dict:
         if not state["quant_metrics"].get("passed") or not state["stress_metrics"].get("passed"):
             raise RuntimeError("Producción requiere ambos filtros aprobados")
         if self.demo:
             return {"status": "REJECTED", "logs": self.log(state, "Datos sintéticos: exportación de producción bloqueada")}
+        if not state.get("final_validation", {}).get("passed"):
+            raise RuntimeError("Producción requiere la reserva final aprobada")
         if not validation_complete(state["quant_metrics"], state["stress_metrics"]):
             raise RuntimeError("Producción requiere walk-forward y filtros obligatorios; regresión y concentración son diagnósticos")
         notes = self.call_model(CodeNotes,
@@ -1026,6 +1108,8 @@ class TradingAgent:
                     "logs": self.log(state, "Datos sintéticos: no se exporta un EA aprobado")}
         if not validation_complete(state.get("quant_metrics", {}), state.get("stress_metrics", {})):
             raise RuntimeError("MQL5 requiere todos los filtros obligatorios aprobados")
+        if not state.get("final_validation", {}).get("passed"):
+            raise RuntimeError("MQL5 requiere la reserva final aprobada")
         if state.get("status") != "EXPORTING" or not state.get("production_code"):
             raise RuntimeError("MQL5 requiere el simulador congelado de esta estrategia")
         self.check_stop()
@@ -1044,7 +1128,7 @@ class TradingAgent:
 
     def should_continue_after_stress(self, state: AgentState) -> str:
         if state["stress_metrics"].get("passed"):
-            return "production_coder_node"
+            return "final_validator_node"
         return "reporter_node"
 
     def reporter_node(self, state: AgentState) -> dict:
@@ -1082,7 +1166,7 @@ class TradingAgent:
                 "logs": self.log(state, f"Reporte del intento {state['iteration_count']}: {report['outcome']}")}
 
     def should_continue_after_report(self, state: AgentState) -> str:
-        if state["status"] == "APPROVED" or (self.cfg.max_iterations > 0 and state["iteration_count"] >= self.cfg.max_iterations):
+        if state.get("final_validation") or state["status"] == "APPROVED" or (self.cfg.max_iterations > 0 and state["iteration_count"] >= self.cfg.max_iterations):
             return END
         return "researcher_node"
 
@@ -1110,7 +1194,7 @@ class TradingAgent:
 
     def build_graph(self):
         graph = StateGraph(AgentState)
-        for name in ("researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "production_coder_node", "mql5_export_node", "reporter_node"):
+        for name in ("researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "final_validator_node", "production_coder_node", "mql5_export_node", "reporter_node"):
             graph.add_node(name, self.observed_node(name))
         graph.add_edge(START, "researcher_node")
         graph.add_edge("researcher_node", "prototyper_node")
@@ -1118,6 +1202,8 @@ class TradingAgent:
         graph.add_conditional_edges("quant_validator_node", self.should_continue_after_quant,
                                     {"stress_test_node": "stress_test_node", "reporter_node": "reporter_node"})
         graph.add_conditional_edges("stress_test_node", self.should_continue_after_stress,
+                                    {"final_validator_node": "final_validator_node", "reporter_node": "reporter_node"})
+        graph.add_conditional_edges("final_validator_node", self.after_final,
                                     {"production_coder_node": "production_coder_node", "reporter_node": "reporter_node"})
         graph.add_edge("production_coder_node", "mql5_export_node")
         graph.add_edge("mql5_export_node", "reporter_node")
@@ -1129,11 +1215,12 @@ class TradingAgent:
     def run(self) -> AgentState:
         state = initial_state()
         metadata = {"settings": asdict(self.cfg), "synthetic": self.demo,
+                    "holdout_start": str(self.holdout_start), "capital": self.cfg.capital,
                     "validation_policy": VALIDATION_POLICY, "memory_path": str(self.memory.path),
                     "markets": self.market_metadata, "asset_settings": self.asset_settings,
                     "split_date_utc": str(self.split_date),
                     "data_sha256": hashlib.sha256(self.data.to_csv(index=False).encode()).hexdigest(),
-                    "warning": "OOS adaptativo; reservar nuevos datos antes de uso real"}
+                    "warning": "Descubrimiento adaptativo; reserva histórica de un solo uso; comprobación prospectiva pendiente"}
         (self.output / "manifest.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         try:
             graph = self.build_graph()
@@ -1195,7 +1282,8 @@ def main():
     parser.add_argument("--model", default=os.getenv("OPENAI_MODEL"))
     parser.add_argument("--settings", type=Path, help="JSON con campos de Settings")
     parser.add_argument("--bars-per-year", type=int)
-    parser.add_argument("--max-iterations", type=int, help="0 = continuo (predeterminado); positivo = tope opcional")
+    parser.add_argument("--max-iterations", type=int, help="Presupuesto positivo de hipótesis (30 por defecto); 0 sólo para demo")
+    parser.add_argument("--capital", type=float, help="Capital USD utilizado en todas las pruebas")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     settings = json.loads(args.settings.read_text(encoding="utf-8")) if args.settings else {}
@@ -1203,6 +1291,8 @@ def main():
         settings["bars_per_year"] = args.bars_per_year
     if args.max_iterations is not None:
         settings["max_iterations"] = args.max_iterations
+    if args.capital is not None:
+        settings["capital"] = args.capital
     cfg = Settings(**settings)
     from market_data import ASSETS, load_public_data
     if args.demo:

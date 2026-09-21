@@ -12,11 +12,34 @@ También se admiten OPENAI_API_KEY y OPENAI_MODEL en el entorno.
 Los precios no requieren clave, Excel, CSV ni cargas manuales.
 La demo usa cinco series sintéticas, no consume IA y nunca aprueba producción.
 
-La búsqueda continúa hasta superar todos los filtros o pulsar **Detener**.
+La búsqueda tiene un presupuesto de **30 hipótesis** por defecto. Se detiene al agotarlo, al pulsar **Detener** o después de comprobar un candidato congelado sobre la reserva final, tanto si pasa como si falla.
 Un error operativo detiene con diagnóstico. Recargar la página conserva el
 trabajo; reiniciar el servidor no reanuda investigaciones anteriores.
 La cancelación es cooperativa; una descarga pendiente tiene timeout de 10s.
 Cancelar una solicitud de IA no revierte consumo ya recibido por el proveedor.
+
+
+## Protocolo de investigación actual
+
+- Presupuesto explícito: 30 hipótesis por ejecución por defecto; en modo real se rechaza `max_iterations=0`.
+- Capital configurable desde el panel o `--capital`; USD 10.000 por defecto, no representa una recomendación de inversión. Todos los backtests, estrés, walk-forward y EA utilizan ese mismo capital. Los activos inasequibles se omiten con diagnóstico; nunca se ajustan sus mínimos para aprobar.
+- El 80% inicial del calendario alimenta descubrimiento (75% de ese tramo para entrenamiento y 25% para validación). El 20% restante queda fuera de estadísticas, reglas, feedback y pruebas de descubrimiento.
+- Comprar y mantener usa la misma asignación, costos, financiación y redondeo que la estrategia. Se exige retorno positivo frente a efectivo sin interés, Sharpe superior al pasivo y mayor retorno o menor drawdown. Es un criterio económico, no una prueba de significancia de alfa.
+- Todos los números en expresiones de investigación deben ser parámetros nombrados, incluso 0 y 1. Los rangos deben permitir variaciones reales, y los parámetros declarados deben utilizarse. El intérprete general sigue admitiendo constantes para compatibilidad y referencias pasivas.
+- El primer candidato que supera descubrimiento se congela en `candidate.json`, con hashes de reglas/configuración y snapshots en `candidate_data/`. No se selecciona otro candidato mirando la reserva final.
+- `outputs/holdout_ledger.sqlite3` consume el intervalo final **antes** de evaluarlo. Un fallo, cancelación o reinicio no lo restaura. El registro es global a estrategias y activos de esa carpeta; cambiar configuración no crea una prueba nueva. Conservar esa carpeta y no borrar el registro. No es un sistema resistente a manipulaciones deliberadas del usuario.
+- La reserva exige al menos 120 barras, 20 operaciones por defecto, rentabilidad y drawdown válidos con costos x1/x2/x3, comparación pasiva, Monte Carlo y retraso. Tanto pasar como fallar termina la búsqueda. Para otra reserva se requieren al menos 120 barras posteriores al último intervalo consumido; por ello las proporciones temporales pueden cambiar en ejecuciones posteriores.
+- El resultado positivo se presenta como **candidato histórico**. El estado interno `APPROVED` conserva compatibilidad con descargas, pero sólo se emite después de la reserva final y la exportación; no autoriza operativa real.
+
+### Comprobación prospectiva del candidato
+
+```powershell
+.\.venv\Scripts\python.exe forward_validate.py outputs\<ejecución>\candidate.json
+```
+
+No usa IA ni modifica reglas. Espera 120 barras posteriores a la fecha real de congelación, prueba exactamente las primeras 120 y guarda `forward_validation.json`. Repetir el comando devuelve ese resultado; no amplía el período hasta conseguir ganancias. Una marca `forward_validation.started` evita repetir una prueba interrumpida. Los snapshots históricos y series auxiliares se verifican mediante hashes. `--research-data` permite añadir publicaciones nuevas sin sustituir valores previos ni cambiar su caducidad. Este comando simula precios posteriores; todavía requiere verificar señales/ejecución en MetaEditor, Strategy Tester y el intermediario objetivo.
+
+Los históricos ya observados con versiones anteriores, las fuentes web actuales y el conocimiento del modelo pueden contaminar retrospectivamente una reserva histórica. El aislamiento de esta versión no borra esa información: la comprobación prospectiva sigue siendo necesaria. Ningún filtro garantiza encontrar una ventaja ni que ésta persista.
 
 ## Activos y proveedores
 
@@ -64,23 +87,24 @@ si dejan de responder; no se eluden verificaciones de navegador.
 2. Prototipar: reglas y parámetros congelados para los activos objetivo. Costos y
    tamaños mínimos dependen del instrumento. El LLM no ejecuta código arbitrario.
 3. Validar por activo: backtest IS/OOS, DSR, regresión alfa/beta y walk-forward.
-   Misma fecha de división temporal 70/30. Si falla un filtro, omite las pruebas
+   En modo real: 60% entrenamiento, 20% validación adaptativa y 20% reserva final inicial; las fechas son comunes a los activos. La demo conserva 70/30. Si falla un filtro, omite las pruebas
    posteriores y cambia de activo, sin modificar las reglas.
-4. Estresar ese mismo activo: $100 con costos x1/x2/x3, perturbaciones de parámetros,
+4. Estresar ese mismo activo: capital configurado con costos x1/x2/x3, perturbaciones de parámetros,
    Monte Carlo, retraso de señales y concentración de beneficios. Después pasa al
    siguiente activo. Recorre los cinco antes de reformular (marca como omitidos los
    no seleccionados o sin datos necesarios); sólo acepta activos que
    superaron todos los filtros. Las pruebas omitidas se distinguen de las fallidas.
-5. Generar: entre los aprobados en ambos filtros, selecciona mayor Sharpe OOS,
-   luego menor drawdown y mayor retorno. Exporta el simulador del activo elegido.
-6. Exportar MQL5: un nodo dedicado genera el Expert Advisor con las mismas reglas,
+5. Congelar: entre los aprobados en descubrimiento, selecciona mayor Sharpe de validación,
+   luego menor drawdown y mayor retorno. Guarda reglas, configuración y snapshots; consulta
+   la reserva final una sola vez. No prueba otro candidato ni vuelve a investigar tras ese resultado.
+6. Si supera la reserva final, exportar MQL5: un nodo dedicado genera el Expert Advisor con las mismas reglas,
    sus dependencias de datos y el paquete de descarga. La ejecución sólo termina
    como aprobada después de guardar los artefactos. Demo y rechazos no exportan EAs.
-7. Reportar: conserva resultados de los cinco. Sin aprobación vuelve a investigar.
+7. Reportar: conserva resultados de los cinco. Sin aprobación de descubrimiento vuelve a investigar dentro del presupuesto; una evaluación final cierra el experimento.
 
 ### Exportación a MetaTrader 5 mediante LangGraph
 
-El grafo ejecuta `production_coder_node → mql5_export_node → reporter_node` después
+El grafo ejecuta `final_validator_node → production_coder_node → mql5_export_node → reporter_node` después
 de superar todos los filtros obligatorios. `mql5_export_node` verifica de nuevo las
 condiciones y traduce el AST de las reglas probadas, sin pedir al LLM que invente
 otra implementación. El simulador Python se conserva para reproducibilidad.
@@ -116,7 +140,7 @@ El archivo sólo contiene el snapshot existente: para fechas nuevas debe actuali
 con el mismo proceso y fuentes. No hay sustitución automática por tick volume.
 
 `EnableTrading=false` por defecto permite observar señales. Cambiarlo habilita órdenes
-en el entorno donde se ejecute el EA. `StrategyCapitalUSD=100` fija el capital inicial,
+en el entorno donde se ejecute el EA. `StrategyCapitalUSD` toma el capital configurado en el experimento (USD 10.000 por defecto),
 actualizado con resultados y costos del historial del símbolo/magic. El nocional se
 limita a ese saldo sin apalancamiento; se respetan contrato, lote mínimo, paso,
 margen disponible y moneda USD. No reutilizar el magic para operaciones ajenas.
@@ -142,15 +166,14 @@ Referencias oficiales: [CopyRates](https://www.mql5.com/en/docs/series/copyrates
 ### Pruebas por activo
 
 Los valores siguientes son criterios iniciales configurables, no garantías de éxito.
-No se reducen automáticamente durante la búsqueda. El capital de estrés sigue siendo
-$100, sin apalancamiento y respetando los mínimos de cada instrumento.
+No se reducen automáticamente durante la búsqueda. El capital es el mismo en descubrimiento, estrés y evaluación final (USD 10.000 por defecto), sin apalancamiento y respetando los mínimos de cada instrumento.
 
 | Prueba | Método y aprobación |
 |---|---|
-| Backtest | 70/30 temporal, costos y mínimos reales del modelo; mantiene filtros IS/OOS, DSR, PF, operaciones y drawdown |
+| Backtest | 60/20/20 temporal en modo real; 70/30 en demo, costos y mínimos reales del modelo; mantiene filtros IS/OOS, DSR, PF, operaciones y drawdown |
 | Regresión histórica | OLS de retornos netos OOS de estrategia contra retornos diarios del propio activo; alfa/beta, errores Newey–West (HAC), mínimo 60 observaciones; alfa − 1,645 × error estándar > 0; diagnóstico, no bloquea aprobación |
 | Walk-forward | 3 ventanas forward sin solapamiento; entrenamiento previo creciente, separación de max_holding barras; reglas congeladas, sin reoptimización; al menos 2/3 ventanas válidas, ganancias agregadas y DD dentro del límite |
-| Costos | $100 con costos x1/x2/x3; todos deben superar criterios de retorno, operaciones, DD y solvencia |
+| Costos | Capital configurado con costos x1/x2/x3; todos deben superar criterios de retorno, operaciones, DD y solvencia |
 | Parámetros | Cada parámetro ejecutable varía ±20%, uno por vez, dentro del esquema; mínimo 4 variantes y ≥80% con retorno/Sharpe positivos, operaciones suficientes, sin quiebra y DD aceptable |
 | Monte Carlo | 1.000 trayectorias por bloque de 5, 10 y 20 barras (3.000 total); en cada grupo P(ganancia) ≥90%, DD percentil 95 ≤límite y ruina operativa ≤1% |
 | Retraso | Señales de entrada y salida por condición retrasadas una barra adicional; stops y límites de tenencia mantienen su lógica; exige retorno/Sharpe positivos, operaciones y DD válidos |
@@ -167,13 +190,12 @@ todas las ventanas de test y en la curva concatenada. Se prueban exactamente las
 reglas que se exportarían: no se selecciona retrospectivamente la variante ganadora.
 
 Monte Carlo remuestrea bloques circulares de los retornos netos diarios de la cuenta
-de $100, con semilla reproducible. Ruina operativa significa perder ≥95% del capital
+al capital configurado, con semilla reproducible. Ruina operativa significa perder ≥95% del capital
 inicial. No reconstruye órdenes, tamaños mínimos o costos dependientes de otra
 trayectoria, ni modela eventos que no existen en la muestra. La concentración también
 es una sensibilidad de retornos, no un segundo simulador de ejecución.
 
-El motor continúa hasta encontrar un aprobado, pulsar Detener, un error operativo o
-alcanzar un límite opcional configurado. No garantiza encontrarlo. Una ganancia sola
+El motor continúa dentro del presupuesto configurado hasta congelar un candidato, pulsar Detener o sufrir un error operativo. La reserva final cierra el experimento independientemente del resultado. No garantiza encontrarlo. Una ganancia sola
 no habilita la exportación: se comprueba explícitamente que estén aprobadas las pruebas obligatorias de walk-forward, parámetros,
 Monte Carlo y retraso. Regresión y concentración son diagnósticas. Los filtros usan el histórico disponible y no sustituyen datos
 posteriores independientes.
@@ -269,7 +291,7 @@ y modalidades de ejecución no implementadas quedan como necesidades documentada
 
 Dossiers: `outputs/<ejecución>/research/attempt_XX.json`; también se incluyen en
 reportes HTML/JSON/Markdown y en el panel, con fuentes enlazadas. La memoria SQLite persiste
-entre ejecuciones y separa demo de investigación real. Se mantiene el esquema 70/30 y el OOS adaptativo existente:
+entre ejecuciones y separa demo de investigación real. La validación de descubrimiento es adaptativa; la reserva histórica final es de un solo uso:
 **todavía se necesitan datos posteriores independientes antes de usar una estrategia**.
 La nueva etapa mejora la formulación, no convierte la búsqueda continua en una prueba final.
 
@@ -333,7 +355,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe trading_agent.py --model NOMBRE_DEL_MODELO
 # Demo sin IA
 .\.venv\Scripts\python.exe trading_agent.py --demo
-# Prueba acotada opcional
+# Prueba acotada offline
 .\.venv\Scripts\python.exe trading_agent.py --demo --max-iterations 2
 # Tests
 .\.venv\Scripts\python.exe -m unittest discover -v
@@ -359,5 +381,5 @@ constituye automáticamente una nueva validación.
   rentabilidad; los ajustes no reemplazan datos posteriores independientes.
 - Long-only, sin apalancamiento. Señales y stops al cierre, ejecución en apertura
   siguiente. No fills intrabar. Drawdown medido al cierre.
-- Los tres escenarios de $100 deben ganar, respetar DD, tener operaciones
+- Los tres escenarios al capital configurado deben ganar, respetar DD, tener operaciones
   suficientes y evitar quiebra. El mínimo de operaciones no garantiza significancia.

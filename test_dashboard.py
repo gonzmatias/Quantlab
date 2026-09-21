@@ -58,8 +58,9 @@ class ReportingTests(unittest.TestCase):
             agent.demo = False
             agent.llm = FakeLLM()
             research = {"hypothesis":H,"iteration_count":1,"strategy_name":"Test strategy","status":"RESEARCHING"}
-            with patch.object(agent,"researcher_node",return_value=research), \
-                 patch.object(agent,"quant_validator_node",return_value={"quant_metrics":{"passed":True,"advanced_tests":{key:{"passed":True} for key in ("regression","walk_forward")}}}), \
+            with patch.object(agent,"final_validator_node",return_value={"final_validation":{"passed":True,"status":"PASSED","reason":"Fixture"}}), \
+                 patch.object(agent,"researcher_node",return_value=research), \
+                 patch.object(agent,"quant_validator_node",return_value={"quant_metrics":{"passed":True,"benchmark":{"passed":True},"advanced_tests":{key:{"passed":True} for key in ("regression","walk_forward")}}}), \
                  patch.object(agent,"stress_test_node",return_value={"stress_metrics":{"passed":True,"robustness_tests":{key:{"passed":True} for key in ("parameters","monte_carlo","signal_delay","concentration")}}}):
                 result = agent.run()
             self.assertEqual(result["status"],"APPROVED")

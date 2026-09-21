@@ -184,7 +184,7 @@ class ResearchDataTests(unittest.TestCase):
             agent = TradingAgent(demo_data(), Settings(), Path(tmp)/"run", demo=True)
             agent.demo = False
             b = brief().model_copy(update={"required_fields": ["external_macro", "close"], "data_acquisition": [spec]})
-            candidate = ResearchCandidate(brief=b, hypothesis=hypothesis("col('external_macro') > 0"))
+            candidate = ResearchCandidate(brief=b, hypothesis=hypothesis("col('external_macro') > cutoff"))
             def acquisition(requests, urls, folder, checkpoint):
                 return acquire_evidence(requests, urls, folder, checkpoint,
                                         fetch=lambda _: b'published,value\n2010-01-01,2\n')

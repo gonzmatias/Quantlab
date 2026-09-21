@@ -38,7 +38,7 @@ class AgentTests(unittest.TestCase):
         self.assertAlmostEqual(r["final_equity"], 982)
 
     def test_minimum_position_blocks_orders(self):
-        cfg = Settings(min_notional=1000)
+        cfg = Settings(capital=100, min_notional=1000)
         r = backtest(demo_data(), H, cfg, 100)
         self.assertEqual(r["trades"], 0)
         self.assertEqual(r["final_equity"], 100)
@@ -78,7 +78,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(agent.should_continue_after_report(state), END)
             state.update(status="RESEARCHING", quant_metrics={"passed": True}, stress_metrics={"passed": True})
             self.assertEqual(agent.should_continue_after_quant(state), "stress_test_node")
-            self.assertEqual(agent.should_continue_after_stress(state), "production_coder_node")
+            self.assertEqual(agent.should_continue_after_stress(state), "final_validator_node")
 
     def test_export_matches_engine(self):
         source = strategy_source(H, Settings(), {"summary": "Quotes ' and newlines\n are data"})
@@ -105,7 +105,7 @@ class AgentTests(unittest.TestCase):
 
     def test_stress_rejects_unaffordable_positions(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = TradingAgent(demo_data(), Settings(min_notional=1000), Path(tmp)/"run", demo=True)
+            agent = TradingAgent(demo_data(), Settings(capital=100, min_notional=1000), Path(tmp)/"run", demo=True)
             state = initial_state()
             state.update(hypothesis=H, history=[{"hypothesis": H}])
             result = agent.stress_test_node(state)

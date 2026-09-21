@@ -36,7 +36,7 @@ class ContinuousTests(unittest.TestCase):
 
     def test_unlimited_routing_and_explicit_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = TradingAgent(demo_data(),Settings(),Path(tmp)/"run",demo=True)
+            agent = TradingAgent(demo_data(),Settings(max_iterations=0),Path(tmp)/"run",demo=True)
             state = initial_state()
             state.update(iteration_count=100001,status="REJECTED")
             self.assertEqual(agent.should_continue_after_report(state),"researcher_node")
@@ -55,7 +55,7 @@ class ContinuousTests(unittest.TestCase):
 
     def test_duplicate_demo_configuration_gets_new_variant(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = TradingAgent(demo_data(),Settings(),Path(tmp)/"run",demo=True)
+            agent = TradingAgent(demo_data(),Settings(max_iterations=0),Path(tmp)/"run",demo=True)
             h=variant_hypothesis(0)
             agent.register_hypothesis(h, 0)
             with patch("trading_agent.variant_hypothesis", side_effect=[h, variant_hypothesis(1), variant_hypothesis(2)]):
@@ -86,7 +86,7 @@ class ContinuousTests(unittest.TestCase):
                 try: await asyncio.sleep(60)
                 finally: cancelled.set()
         with tempfile.TemporaryDirectory() as tmp:
-            agent=TradingAgent(demo_data(),Settings(),Path(tmp)/"run",demo=True,stop_requested=stop.is_set)
+            agent=TradingAgent(demo_data(),Settings(max_iterations=0),Path(tmp)/"run",demo=True,stop_requested=stop.is_set)
             agent.llm=SlowLLM()
             errors=[]
             def invoke():
@@ -103,7 +103,7 @@ class ContinuousTests(unittest.TestCase):
 
     def test_report_memory_is_bounded_and_files_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent=TradingAgent(demo_data(),Settings(),Path(tmp)/"run",demo=True)
+            agent=TradingAgent(demo_data(),Settings(max_iterations=0),Path(tmp)/"run",demo=True)
             state=initial_state()
             state.update(status="REJECTED",hypothesis=variant_hypothesis(0).model_dump())
             for attempt in range(1,106):
@@ -117,7 +117,7 @@ class ContinuousTests(unittest.TestCase):
 
     def test_snapshot_retries_transient_windows_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent=TradingAgent(demo_data(),Settings(),Path(tmp)/"run",demo=True)
+            agent=TradingAgent(demo_data(),Settings(max_iterations=0),Path(tmp)/"run",demo=True)
             original=Path.replace
             calls=[]
             def transient(path,target):

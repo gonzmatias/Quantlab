@@ -1,19 +1,20 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const token = document.querySelector('meta[name="session-token"]').content;
-const stages = ["researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "production_coder_node", "mql5_export_node", "reporter_node"];
+const stages = ["researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "final_validator_node", "production_coder_node", "mql5_export_node", "reporter_node"];
 const descriptions = {
   researcher_node: "Buscando fuentes, comprobando compatibilidad y formulando una hipótesis verificable con datos de entrenamiento.",
   prototyper_node: "El agente convierte la hipótesis en un prototipo reproducible.",
   quant_validator_node: "Backtest, regresión histórica y walk-forward. Si un activo falla, se evalúa el siguiente.",
   stress_test_node: "Estrés de costos y parámetros, Monte Carlo, retraso de señales y concentración de beneficios.",
+  final_validator_node: "Comprobando un candidato congelado sobre la reserva final de un solo uso.",
   production_coder_node: "Guardando el simulador con las reglas que superaron las pruebas.",
   mql5_export_node: "Exportando el Expert Advisor MQL5 y sus datos auxiliares.",
   reporter_node: "El agente de reportes está documentando la evidencia y la decisión."
 };
 let mode = "public", revision = -1, snapshot = null, selectedAttempt = null, selectedReport = null;
 let displayedRun = null, chartKey = "oos", reportRequest = 0, starting = false;
-let settings = {max_iterations:0,dsr_trial_budget:100,bars_per_year:252,min_trades:30,max_drawdown:.25,commission_rate:.001,
+let settings = {max_iterations:30,capital:10000,final_min_trades:20,dsr_trial_budget:100,bars_per_year:252,min_trades:30,max_drawdown:.25,commission_rate:.001,
   fixed_commission:0,spread_bps:5,slippage_bps:5,min_notional:5,quantity_step:.00001};
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const pct = (v) => Number.isFinite(v) ? `${(v*100).toFixed(2)}%` : "—";
@@ -60,7 +61,7 @@ $("settingsForm").onsubmit = (event) => {
     assetSettings[input.dataset.asset][input.dataset.cost] = Number(input.value) / (input.dataset.cost === "commission_rate" ? 100 : 1);
   }
   $("settingsDialog").close();
-  if (!snapshot?.state.iteration_count) $("attemptCounter").textContent = "0 intentos · sin límite";
+  if (!snapshot?.state.iteration_count) $("attemptCounter").textContent = `0 / ${settings.max_iterations} intentos`;
 };
 $("startButton").onclick = async () => {
   if (starting || snapshot?.busy) return;
@@ -107,7 +108,7 @@ function render(data) {
     displayedRun = data.output; selectedAttempt = null; selectedReport = null; reportRequest++;
     $("reportPanel").classList.add("hidden");
   }
-  const labels = {IDLE:"LISTO PARA INICIAR",STARTING:"PREPARANDO DATOS",RUNNING:"INVESTIGACIÓN EN CURSO",COMPLETED:"APROBADO EN SIMULACIÓN",EXHAUSTED:"BÚSQUEDA FINALIZADA · SIN APROBACIÓN",CANCELLED:"DETENIDO POR EL USUARIO",ERROR:"ERROR DE EJECUCIÓN"};
+  const labels = {IDLE:"LISTO PARA INICIAR",STARTING:"PREPARANDO DATOS",RUNNING:"INVESTIGACIÓN EN CURSO",COMPLETED:"CANDIDATO HISTÓRICO · PRUEBA FUTURA PENDIENTE",EXHAUSTED:"BÚSQUEDA FINALIZADA · SIN APROBACIÓN",CANCELLED:"DETENIDO POR EL USUARIO",ERROR:"ERROR DE EJECUCIÓN"};
   let label = labels[lifecycle] || "EN ESPERA";
   if (busy && s.status === "REJECTED") label = "INTENTO RECHAZADO · PREPARANDO ITERACIÓN";
   if (busy && data.stop_requested) label = "DETENIENDO INVESTIGACIÓN";
@@ -116,7 +117,7 @@ function render(data) {
   $("attemptCounter").textContent = data.max_iterations > 0 ? `${s.iteration_count} / ${data.max_iterations} intentos` : `${s.iteration_count} intentos · sin límite`;
   $("strategyName").textContent = lifecycle === "IDLE" ? "Tu próxima hipótesis empieza aquí" : s.strategy_name;
   let description = descriptions[s.current_stage] || "Cada estrategia se prueba en los cinco activos antes de iterar.";
-  if (lifecycle === "EXHAUSTED") description = "Se alcanzó el límite de intentos. Revisa los motivos y los reportes de cada prueba.";
+  if (lifecycle === "EXHAUSTED") description = s.final_validation?.reason || "Se alcanzó el presupuesto de intentos. Revisa los diagnósticos.";
   if (lifecycle === "COMPLETED") description = "La estrategia pasó los filtros. Su reporte completo está disponible más abajo.";
   if (lifecycle === "CANCELLED") description = "Detenida por tu solicitud. Los reportes completados permanecen disponibles.";
   if (lifecycle === "ERROR") description = data.error || s.logs.at(-1) || "La ejecución encontró un error operativo.";
@@ -129,7 +130,7 @@ function render(data) {
   $("liveLabel").textContent = busy ? "● EN VIVO" : "EN ESPERA"; $("liveLabel").classList.toggle("active",busy);
   document.querySelectorAll(".pipeline > div").forEach((element) => {
     const name = element.dataset.stage;
-    const completed = name === "researcher_node" ? Boolean(s.hypothesis?.family) : name === "prototyper_node" ? Boolean(s.quant_metrics?.in_sample) || stages.indexOf(s.current_stage)>1 && !!s.hypothesis?.family : name === "quant_validator_node" ? !!s.quant_metrics?.in_sample : name === "stress_test_node" ? !!s.stress_metrics?.scenarios : name === "production_coder_node" ? ["EXPORTING","APPROVED"].includes(s.status) : name === "mql5_export_node" ? s.mql5_export?.status === "EXPORTED" : (s.reports || []).some(r=>r.attempt===s.iteration_count);
+    const completed = name === "final_validator_node" ? Boolean(s.final_validation?.status) : name === "researcher_node" ? Boolean(s.hypothesis?.family) : name === "prototyper_node" ? Boolean(s.quant_metrics?.in_sample) || stages.indexOf(s.current_stage)>1 && !!s.hypothesis?.family : name === "quant_validator_node" ? !!s.quant_metrics?.in_sample : name === "stress_test_node" ? !!s.stress_metrics?.scenarios : name === "production_coder_node" ? ["EXPORTING","APPROVED"].includes(s.status) : name === "mql5_export_node" ? s.mql5_export?.status === "EXPORTED" : (s.reports || []).some(r=>r.attempt===s.iteration_count);
     element.classList.toggle("active", busy && s.current_stage === name);
     element.classList.toggle("done", completed && !(busy && s.current_stage===name));
     element.classList.toggle("skipped", s.current_stage==="reporter_node" && !completed && name!=="reporter_node");
@@ -140,7 +141,7 @@ function render(data) {
   const reports = s.reports || [];
   $("historyCount").textContent = s.report_count || reports.length;
   $("historyDescription").textContent = s.report_count > reports.length ? `Mostrando los últimos ${reports.length} reportes. Abre cualquier intento anterior por su número.` : "Cada hipótesis conserva sus resultados, incluso cuando se rechaza.";
-  $("historyRows").innerHTML = reports.length ? reports.map(r=>`<tr data-attempt="${r.attempt}" class="${selectedAttempt===r.attempt?'selected':''}"><td>#${String(r.attempt).padStart(2,"0")}</td><td class="strategy-cell">${escapeHtml(r.strategy_name)}<small> · ${escapeHtml(r.selected_asset || "")}</small></td><td class="${r.oos.net_return>0?'positive':r.oos.net_return<0?'negative':''}">${pct(r.oos.net_return)}</td><td>${pct(r.dsr)}</td><td><span class="result-badge ${r.outcome==='APPROVED'?'approved':''}">${r.outcome==='APPROVED'?'APROBADO':'RECHAZADO'}</span></td><td><button class="view-report" data-attempt="${r.attempt}">Ver reporte ↗</button></td></tr>`).join("") : '<tr><td colspan="6" class="table-empty">Todavía no hay pruebas. Los reportes aparecerán aquí automáticamente.</td></tr>';
+  $("historyRows").innerHTML = reports.length ? reports.map(r=>`<tr data-attempt="${r.attempt}" class="${selectedAttempt===r.attempt?'selected':''}"><td>#${String(r.attempt).padStart(2,"0")}</td><td class="strategy-cell">${escapeHtml(r.strategy_name)}<small> · ${escapeHtml(r.selected_asset || "")}</small></td><td class="${r.oos.net_return>0?'positive':r.oos.net_return<0?'negative':''}">${pct(r.oos.net_return)}</td><td>${pct(r.dsr)}</td><td><span class="result-badge ${r.outcome==='APPROVED'?'approved':''}">${r.outcome==='APPROVED'?'CANDIDATO':'RECHAZADO'}</span></td><td><button class="view-report" data-attempt="${r.attempt}">Ver reporte ↗</button></td></tr>`).join("") : '<tr><td colspan="6" class="table-empty">Todavía no hay pruebas. Los reportes aparecerán aquí automáticamente.</td></tr>';
   $("historyRows").querySelectorAll("button").forEach(button=>button.onclick=()=>loadReport(Number(button.dataset.attempt),true));
   renderCharts(selectedReport?.charts || s.charts || {});
   const approved = reports.find(r=>r.outcome==="APPROVED");
@@ -207,7 +208,7 @@ async function loadReport(attempt, scroll) {
     $("downloadBundle").classList.toggle("hidden", !hasMql);
     const h=report.hypothesis, ok=report.outcome==="APPROVED";
     const parameters = h.family ? [['Asignación',pct(h.allocation)],['Stop nominal',pct(h.stop_loss)],['Objetivo nominal',pct(h.take_profit)],['Tenencia máx.',`${h.max_holding} barras`]] : [];
-    $("reportContent").innerHTML=`<div class="report-summary ${ok?'success':''}"><span class="symbol">${ok?'✓':'↻'}</span><div><h4>${ok?'Filtros superados · aprobado en simulación':'Intento rechazado · diagnóstico disponible'}</h4><p>${escapeHtml(report.summary)} ${escapeHtml(report.next_action)}</p></div></div><p class="report-copy">${escapeHtml(h.rationale || 'No se obtuvo una hipótesis válida en este intento.')}</p><div class="params">${parameters.map(([key,value])=>`<span>${escapeHtml(key)} <b>${escapeHtml(value)}</b></span>`).join('')}</div><h4 class="report-section-title">Resultados frente a los criterios de aprobación</h4><div class="check-grid">${report.checks.map(c=>`<div class="check ${c.required===false?'skip':c.passed===false?'fail':c.passed===null?'skip':''}"><span class="indicator">${c.required===false?'i':c.passed===true?'✓':c.passed===false?'×':'—'}</span><div><strong>${escapeHtml(c.label)}</strong><p>${escapeHtml(c.value)}</p><small>${escapeHtml(c.requirement)}</small></div></div>`).join('')}</div>${report.rejection_reasons.length?`<h4 class="report-section-title">Motivos de rechazo</h4><ul class="reasons">${report.rejection_reasons.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul>`:''}<div class="limitations">${report.limitations.map(l=>escapeHtml(l)).join('<br>')}</div>`;
+    $("reportContent").innerHTML=`<div class="report-summary ${ok?'success':''}"><span class="symbol">${ok?'✓':'↻'}</span><div><h4>${ok?'Candidato histórico · validación prospectiva pendiente':'Intento rechazado · diagnóstico disponible'}</h4><p>${escapeHtml(report.summary)} ${escapeHtml(report.next_action)}</p></div></div><p class="report-copy">${escapeHtml(h.rationale || 'No se obtuvo una hipótesis válida en este intento.')}</p><div class="params">${parameters.map(([key,value])=>`<span>${escapeHtml(key)} <b>${escapeHtml(value)}</b></span>`).join('')}</div><h4 class="report-section-title">Resultados frente a los criterios de aprobación</h4><div class="check-grid">${report.checks.map(c=>`<div class="check ${c.required===false?'skip':c.passed===false?'fail':c.passed===null?'skip':''}"><span class="indicator">${c.required===false?'i':c.passed===true?'✓':c.passed===false?'×':'—'}</span><div><strong>${escapeHtml(c.label)}</strong><p>${escapeHtml(c.value)}</p><small>${escapeHtml(c.requirement)}</small></div></div>`).join('')}</div>${report.rejection_reasons.length?`<h4 class="report-section-title">Motivos de rechazo</h4><ul class="reasons">${report.rejection_reasons.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul>`:''}<div class="limitations">${report.limitations.map(l=>escapeHtml(l)).join('<br>')}</div>`;
     if (hasMql) $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Expert Advisor MQL5</h4><p>${escapeHtml(report.mql5_export.source)}</p><p>Archivo generado. Compilación en MetaEditor y validación en Strategy Tester pendientes.</p>`);
     if (h.program) {
       $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Reglas investigadas</h4><p><strong>Entrada:</strong> <code>${escapeHtml(h.program.entry)}</code></p><p><strong>Salida:</strong> <code>${escapeHtml(h.program.exit)}</code></p><div class="params">${h.program.parameters.map(p=>`<span>${escapeHtml(p.name)} <b>${escapeHtml(p.value)}</b></span>`).join('')}</div>`);

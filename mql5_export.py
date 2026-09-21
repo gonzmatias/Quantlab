@@ -144,6 +144,7 @@ def export_mql5(h, asset, data, folder, signature, settings, checkpoint=lambda: 
     checkpoint()
     feature_name = f"quantlab_{signature[:12]}_features.csv"
     source, program, extras, legacy = generate_source(h, asset, data.timestamp.iloc[0], feature_name, signature)
+    source = source.replace("input double StrategyCapitalUSD=100.0;", f"input double StrategyCapitalUSD={float(settings.get('capital', 10000)):.8f};")
     missing = set(extras) - set(data.columns)
     if missing:
         raise ValueError("Faltan datos de la estrategia aprobada: " + ", ".join(sorted(missing)))
@@ -210,7 +211,7 @@ fees del historial de ese símbolo/magic. Evitar reutilizar el magic para operac
 ajenas o cambiar el capital inicial después de empezar. El tamaño queda limitado
 por ese saldo, efectivo disponible y nocional sin leverage;
 pasos de lote, margen y mínimo del bróker pueden impedir operar. El valor inicial de
-StrategyCapitalUSD es 100, coherente con el estrés actual. Comisiones, swaps y precios
+StrategyCapitalUSD es {float(settings.get('capital', 10000)):,.2f}, coherente con el capital validado. Comisiones, swaps y precios
 reales no se reconstruyen con los supuestos del simulador. Revalidar cambios de inputs.
 El EA no fuerza la liquidación al finalizar un histórico: el tester debe contemplar
 la posición residual al comparar el cierre forzado del simulador Python.

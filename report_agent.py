@@ -53,8 +53,11 @@ def assessment(quant, stress):
 def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
     quant, stress = state.get("quant_metrics", {}), state.get("stress_metrics", {})
     ins, oos = quant.get("in_sample", {}), quant.get("out_of_sample", {})
-    approved = state.get("status") == "APPROVED" and validation_complete(quant, stress) and not synthetic
+    approved = state.get("status") == "APPROVED" and validation_complete(quant, stress) and not synthetic and state.get("final_validation", {}).get("passed", False)
     reasons = list(quant.get("rejection_reasons", [])) + list(stress.get("rejection_reasons", []))
+    final = state.get("final_validation", {})
+    if final and not final.get("passed"):
+        reasons.append(final["reason"])
     if not approved and not reasons:
         reasons = state.get("logs", [])[-1:] or ["No se completaron todas las pruebas."]
     checks = []
@@ -93,11 +96,16 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         passed = (not scenario.get("bankrupt", True) and scenario.get("net_return", 0) > 0
                   and scenario.get("max_drawdown", 1) <= settings["max_drawdown"]
                   and scenario.get("trades", 0) >= settings["min_trades"])
-        check(f"Estrés $100 · costos ×{multiplier}",
+        check(f"Estrés ${settings.get('capital', 100):,.2f} · costos ×{multiplier}",
               f"${scenario.get('final_equity', 0):.2f} · DD {number(scenario.get('max_drawdown'), True)} · {scenario.get('trades', 0)} operaciones",
               f"Ganancia; DD ≤ {settings['max_drawdown']:.0%}; ≥ {settings['min_trades']} operaciones; sin quiebra", passed)
     if not stress:
-        check("Estrés de $100", "No ejecutado", "Requiere aprobar validación cuantitativa", None)
+        check("Estrés al capital configurado", "No ejecutado", "Requiere aprobar validación cuantitativa", None)
+    benchmark = quant.get("benchmark", {})
+    check("Comparación comprar/mantener y efectivo", benchmark.get("reason", "No evaluada"),
+          "Sharpe superior y mejora de retorno o drawdown; mismo capital y asignación", benchmark.get("passed"))
+    check("Reserva histórica final de un solo uso", final.get("reason", "Pendiente"),
+          "Reglas congeladas; costos x1/x2/x3, benchmark, Monte Carlo y retraso", final.get("passed"))
     advanced_specs = {
         "regression": ("Regresión histórica alfa/beta", "Límite inferior del alfa HAC > 0; al menos 60 observaciones"),
         "walk_forward": ("Walk-forward cronológico", "≥ 2/3 ventanas válidas; retorno agregado positivo, operaciones y DD dentro de límites"),
@@ -118,9 +126,9 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
     outcome = "APPROVED" if approved else "REJECTED"
     attempt = state.get("iteration_count", 0)
     return {
-        "schema_version": 3, "attempt": attempt, "created_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 4, "final_validation": final, "evidence_stage": "HISTORICAL_CANDIDATE" if approved else "RESEARCH", "attempt": attempt, "created_at": datetime.now(timezone.utc).isoformat(),
         "validation_policy": VALIDATION_POLICY,
-        "assessment": assessment(quant, stress),
+        "assessment": {**assessment(quant, stress), "historical_holdout": final.get("status", "PENDING")},
         "asset_assessments": {a: assessment(r.get("quant_metrics", {}), r.get("stress_metrics", {})) for a, r in state.get("asset_results", {}).items()},
         "research": state.get("research", {}),
         "strategy_name": state.get("strategy_name") or strategy_name(state.get("hypothesis", {})),
@@ -130,10 +138,11 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         "asset_results": {a: {k: v for k, v in r.items() if k != "charts"} for a, r in state.get("asset_results", {}).items()},
         "positive_assets": [a for a, r in state.get("asset_results", {}).items() if r.get("quant_metrics", {}).get("out_of_sample", {}).get("net_return", 0) > 0],
         "ranking_rule": "Cada activo debe superar backtest, walk-forward, costos, parámetros, Monte Carlo y retraso. Regresión y concentración son diagnósticos. Entre aprobados: mayor Sharpe OOS, menor drawdown y mayor retorno.",
-        "summary": ((f"La estrategia superó los filtros cuantitativos y de capital reducido en {state.get('selected_asset') or 'el activo evaluado'}."
+        "summary": ((f"Candidato histórico: superó descubrimiento y reserva final en {state.get('selected_asset') or 'el activo evaluado'}."
                     if approved else "El intento no superó todos los filtros. Se conserva el diagnóstico para la siguiente hipótesis.")
                     + (" Comparación completada: " + ", ".join(state["asset_results"]) + "." if state.get("asset_results") else "")),
-        "next_action": ("Revisar el reporte y validar con datos independientes." if approved else
+        "next_action": ("Comprobar en datos posteriores con forward_validate.py y verificar ejecución en MT5; no habilitar operativa por este resultado." if approved else
+                        "Reserva final consumida: experimento cerrado; no reformular con sus resultados." if final else
                         "Límite de intentos alcanzado: búsqueda finalizada." if settings["max_iterations"] > 0 and attempt >= settings["max_iterations"] else
                         "Volver a investigación con los motivos de rechazo."),
         "checks": checks, "rejection_reasons": reasons, "quant_metrics": quant,
@@ -191,13 +200,14 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:12px;t
 svg{{width:100%;margin:12px 0}}svg text{{font:13px system-ui;fill:#536c7b}}
 pre{{white-space:pre-wrap;background:#f3f6f8;padding:16px}}@media print{{body,main{{padding:0;background:white}}tr,svg{{break-inside:avoid}}}}</style>
 <main><small>QUANT LAB / REPORTE DE PRUEBAS / INTENTO {report['attempt']}</small>
-<h1>{esc(report['strategy_name'])}</h1><span class="badge">{'APROBADO EN SIMULACIÓN' if report['outcome']=='APPROVED' else 'RECHAZADO'}</span>
+<h1>{esc(report['strategy_name'])}</h1><span class="badge">{'CANDIDATO HISTÓRICO' if report['outcome']=='APPROVED' else 'RECHAZADO'}</span>
 <p>{esc(report['summary'])}</p><small>{esc(report['created_at'])} · {'Demo sintética' if report['synthetic'] else 'Datos públicos'}</small>
 <p><b>Rentabilidad histórica:</b> {esc(verdicts.get('historical_profitability', 'NO EVALUADA'))} · <b>Robustez:</b> {esc(verdicts.get('robustness', 'NO EVALUADA'))} · <b>Validación independiente:</b> PENDIENTE</p>
 <h2>Comparación por activo</h2>{assets}
 <h2>Hipótesis y parámetros</h2><p>{esc(h.get('rationale', 'No se obtuvo una hipótesis válida.'))}</p>
 <pre>{esc(json.dumps(h, ensure_ascii=False, indent=2))}</pre>
 {research_html(report)}
+<h2>Reserva final</h2><pre>{esc(json.dumps(report.get("final_validation", {}), ensure_ascii=False, indent=2))}</pre>
 <h2>Exportación MQL5</h2><pre>{esc(json.dumps(report.get("mql5_export", {}), ensure_ascii=False, indent=2))}</pre>
 <h2>Resultados frente a los filtros</h2><table><thead><tr><th>Prueba</th><th>Resultado</th><th>Requisito</th><th>Estado</th></tr></thead><tbody>{rows}</tbody></table>
 <details><summary>Detalle de regresión, walk-forward y robustez</summary><pre>{esc(json.dumps({'quant': report['quant_metrics'].get('advanced_tests', {}), 'stress': report['stress_metrics'].get('robustness_tests', {})}, ensure_ascii=False, indent=2))}</pre></details>
@@ -218,6 +228,7 @@ def write_report(report: dict, output: Path) -> None:
     lines += [f"- {c['label']}: {c['value']} (requisito: {c['requirement']}). "
               + ("Cumple." if c["passed"] is True else "No cumple." if c["passed"] is False else "No evaluado.") for c in report["checks"]]
     lines += ["", "## Diagnóstico", ""] + [f"- {r}" for r in report["rejection_reasons"]]
+    lines += ["", "## Reserva final", "", "```json", json.dumps(report.get("final_validation", {}), ensure_ascii=False, indent=2), "```"]
     if report.get("mql5_export"):
         lines += ["", "## Exportación MQL5", "", "```json", json.dumps(report["mql5_export"], ensure_ascii=False, indent=2), "```"]
     lines += ["", report["next_action"], "", "## Limitaciones", ""] + [f"- {r}" for r in report["limitations"]]

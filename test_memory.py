@@ -83,7 +83,7 @@ class MemoryTests(unittest.TestCase):
         self.assertTrue({"execution_limits", "costs", "insufficient_evidence"}.issubset(kinds))
 
     def test_diagnostic_failure_does_not_override_mandatory_results(self):
-        q = {"passed": True, "advanced_tests": {"regression": {"passed": False}, "walk_forward": {"passed": True}},
+        q = {"passed": True, "benchmark": {"passed": True}, "advanced_tests": {"regression": {"passed": False}, "walk_forward": {"passed": True}},
              "out_of_sample": {"net_return": .1, "trades": 40}}
         s = {"passed": True, "robustness_tests": {k: {"passed": True} for k in ("parameters", "monte_carlo", "signal_delay")}}
         s["robustness_tests"]["concentration"] = {"passed": False}
@@ -104,7 +104,8 @@ class MemoryTests(unittest.TestCase):
                         "profit_factor": 2., "no_losing_trades": False, "bankrupt": False,
                         "returns": np.full(n, .001), "equity": np.linspace(capital, capital*1.1, n+1)}
             state = {**initial_state(), "hypothesis": variant_hypothesis(0).model_dump(), "iteration_count": 1}
-            with patch("trading_agent.backtest", side_effect=simulation), \
+            with patch("trading_agent.benchmark_test", return_value={"passed": True}), \
+                 patch("trading_agent.backtest", side_effect=simulation), \
                  patch("trading_agent.deflated_sharpe", return_value={"dsr": .99, "dsr_z": 5., "sequential_passed": True}), \
                  patch("trading_agent.regression_test", return_value={"passed": False}), \
                  patch("trading_agent.walk_forward_test", return_value={"passed": True}) as wf:

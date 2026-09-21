@@ -42,6 +42,7 @@ class Mql5Tests(unittest.TestCase):
             self.assertNotIn("@@", source)
             self.assertIn("void OnTick()", source)
             self.assertIn("input bool EnableTrading=false", source)
+            self.assertIn("input double StrategyCapitalUSD=10000.00000000;", source)
             manifest = json.loads(Path(artifact["manifest"]).read_text(encoding="utf-8"))
             self.assertEqual(manifest["compilation"], "PENDING_METAEDITOR")
             self.assertEqual(manifest["mt5_parity"], "PENDING_STRATEGY_TESTER")

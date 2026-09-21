@@ -3,12 +3,13 @@ import math
 
 import numpy as np
 
-VALIDATION_POLICY = {"version": "2", "mandatory": ["walk_forward", "parameters", "monte_carlo", "signal_delay"],
+VALIDATION_POLICY = {"version": "3", "mandatory": ["benchmark", "walk_forward", "parameters", "monte_carlo", "signal_delay"],
                      "diagnostic": ["regression", "concentration"]}
 
 
 def validation_complete(quant, stress):
     return bool(quant.get("passed") and stress.get("passed")
+                and quant.get("benchmark", {}).get("passed")
                 and quant.get("advanced_tests", {}).get("walk_forward", {}).get("passed")
                 and all(stress.get("robustness_tests", {}).get(key, {}).get("passed") for key in
                         ("parameters", "monte_carlo", "signal_delay")))
@@ -79,8 +80,8 @@ def walk_forward_test(data, h, cfg, split, simulate, checkpoint):
         train_end = int(start) - gap
         if train_end <= h["slow"] + 60 or end - start < 30:
             return {"passed": False, "status": "FAILED", "reason": "Historia insuficiente para walk-forward con separación temporal", "folds": rows}
-        training = simulate(data.iloc[:train_end], h, cfg, 10000, h["slow"], train_end, checkpoint=checkpoint)
-        testing = simulate(data.iloc[:int(end)], h, cfg, 10000, int(start), int(end), checkpoint=checkpoint)
+        training = simulate(data.iloc[:train_end], h, cfg, cfg.capital, h["slow"], train_end, checkpoint=checkpoint)
+        testing = simulate(data.iloc[:int(end)], h, cfg, cfg.capital, int(start), int(end), checkpoint=checkpoint)
         passed = viable(training, cfg) and viable(testing, cfg, fold_min)
         rows.append({"train_start": str(data.timestamp.iloc[h["slow"]]), "train_end": str(data.timestamp.iloc[train_end-1]),
                      "test_start": str(data.timestamp.iloc[int(start)]), "test_end": str(data.timestamp.iloc[int(end)-1]),
@@ -156,14 +157,22 @@ def parameter_variants(h):
 
 
 def parameter_stress(data, h, cfg, start, simulate, checkpoint):
+    if h.get("program"):
+        from strategy_rules import validate_tunable_program
+        try:
+            validate_tunable_program(h["program"])
+        except ValueError as exc:
+            return {"passed": False, "status": "FAILED", "reason": str(exc), "scenarios": []}
     rows = []
     for key, factor, variant in parameter_variants(h):
         checkpoint()
-        result = simulate(data, variant, cfg, 100, start, checkpoint=checkpoint)
+        result = simulate(data, variant, cfg, cfg.capital, start, checkpoint=checkpoint)
         rows.append({"parameter": key, "factor": factor, "value": variant[key],
                      "passed": bool(viable(result, cfg)), "metrics": summarize(result)})
     fraction = sum(row["passed"] for row in rows) / len(rows) if rows else 0.0
-    passed = fraction >= cfg.parameter_pass_min and len(rows) >= 4
+    covered = {row["parameter"] for row in rows}
+    required = {"rule:" + p["name"] for p in h.get("program", {}).get("parameters", [])} if h.get("program") else set()
+    passed = fraction >= cfg.parameter_pass_min and len(rows) >= 4 and required.issubset(covered)
     return {"passed": passed, "status": "PASSED" if passed else "FAILED", "scenarios": rows,
             "passing_fraction": fraction, "required_fraction": cfg.parameter_pass_min,
             "reason": "Parámetros robustos" if passed else "Rendimiento frágil ante variaciones de parámetros"}

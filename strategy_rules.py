@@ -126,6 +126,31 @@ def program_requirements(program):
     return set().union(*(row[1] for row in inspected)), max(row[2] for row in inspected)
 
 
+def validate_tunable_program(program):
+    """Research rules must expose every numeric choice to sensitivity analysis.
+
+    Benchmark/export programs may contain constants, so this belongs at research
+    admission and the robustness gate, not in the general-purpose interpreter.
+    """
+    declared = {p["name"]: p for p in program["parameters"]}
+    used = set()
+    for expression in (program["entry"], program["exit"]):
+        tree = ast.parse(expression, mode="eval")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+                raise ValueError("Robustez: todos los números de las señales deben ser parámetros nombrados, incluidos 0 y 1")
+            if isinstance(node, ast.Name) and node.id in declared:
+                used.add(node.id)
+    if not used or used != set(declared):
+        raise ValueError("Robustez: se requieren parámetros de señal utilizados, sin parámetros decorativos")
+    for name, p in declared.items():
+        delta = max(abs(p["value"]) * .2, 1 if p["integer"] else .01)
+        # One side may be physically bounded (e.g. lag=1); at least one real
+        # perturbation of the declared size must be possible.
+        if max(p["value"] - p["lower"], p["upper"] - p["value"]) + 1e-12 < delta:
+            raise ValueError("Robustez: rango insuficiente para perturbar " + name)
+
+
 def evaluate_expression(expression, data, parameters):
     tree, fields, _ = inspect_expression(expression, parameters)
     if fields - set(data.columns):

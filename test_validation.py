@@ -168,7 +168,7 @@ class ValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = TradingAgent(demo_data(), Settings(), Path(tmp)/"run", demo=True)
             agent.demo = False
-            with self.assertRaisesRegex(RuntimeError, "regresión"):
+            with self.assertRaisesRegex(RuntimeError, "reserva final"):
                 agent.production_coder_node(state)
 
 
