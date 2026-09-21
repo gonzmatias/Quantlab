@@ -383,3 +383,20 @@ constituye automáticamente una nueva validación.
   siguiente. No fills intrabar. Drawdown medido al cierre.
 - Los tres escenarios al capital configurado deben ganar, respetar DD, tener operaciones
   suficientes y evitar quiebra. El mínimo de operaciones no garantiza significancia.
+
+
+### Consumo de contexto de IA
+
+La investigación mantiene dos llamadas por hipótesis: búsqueda web con evidencia y
+formulación estructurada. El contexto IS, las fuentes y los 12 registros recientes
+se serializan en JSON compacto, sin escapes Unicode innecesarios. Los bloques y
+textos idénticos suficientemente largos se envían una sola vez, con referencias
+explícitas. Si esa representación agrega tamaño se utiliza JSON compacto normal.
+No se redondean números, recortan reglas, eliminan fuentes ni resumen resultados.
+Los dossiers y la memoria en disco conservan su formato completo.
+
+La documentación del simulador se genera localmente mediante una plantilla; la
+exportación ya no realiza una llamada adicional a la IA ni envía métricas para
+redactar notas. Los filtros, las reglas y la reserva final no cambian por esta
+optimización. El ahorro exacto de tokens depende del modelo y del contexto; una
+reducción de caracteres no es una medición de tokens facturados.
