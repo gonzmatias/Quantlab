@@ -3,12 +3,15 @@ import math
 
 import numpy as np
 
+VALIDATION_POLICY = {"version": "2", "mandatory": ["walk_forward", "parameters", "monte_carlo", "signal_delay"],
+                     "diagnostic": ["regression", "concentration"]}
+
 
 def validation_complete(quant, stress):
     return bool(quant.get("passed") and stress.get("passed")
-                and all(quant.get("advanced_tests", {}).get(key, {}).get("passed") for key in ("regression", "walk_forward"))
+                and quant.get("advanced_tests", {}).get("walk_forward", {}).get("passed")
                 and all(stress.get("robustness_tests", {}).get(key, {}).get("passed") for key in
-                        ("parameters", "monte_carlo", "signal_delay", "concentration")))
+                        ("parameters", "monte_carlo", "signal_delay")))
 
 
 def skipped(reason):

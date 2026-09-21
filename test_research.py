@@ -72,12 +72,15 @@ class ResearchTests(unittest.TestCase):
             self.assertIn("repetidas", second["research"]["rejection_reason"])
             self.assertEqual(len(agent.recent_research()), 2)
 
-    def test_parameter_only_changes_are_not_new_research(self):
+    def test_parameter_changes_require_completed_original_and_justification(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self.agent(tmp)
             h = variant_hypothesis(0)
             self.assertTrue(agent.register_hypothesis(h, 1))
-            with self.assertRaisesRegex(ValueError, "estructurales repetidas"):
+            with self.assertRaisesRegex(ValueError, "pendiente"):
+                agent.register_hypothesis(h.model_copy(update={"slow": 80}), 2)
+            agent.memory.save(agent.run_id, 1, {}, "REJECTED")
+            with self.assertRaisesRegex(ValueError, "justificación"):
                 agent.register_hypothesis(h.model_copy(update={"slow": 80}), 2)
             self.assertTrue(agent.register_hypothesis(h.model_copy(update={"regime": "low_volatility"}), 3))
 

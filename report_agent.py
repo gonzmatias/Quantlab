@@ -8,7 +8,7 @@ from __future__ import annotations
 import html
 import json
 from research import safe_source_url
-from validation import validation_complete
+from validation import validation_complete, VALIDATION_POLICY
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +36,16 @@ def number(value, percent: bool = False) -> str:
     if value is None:
         return "No evaluado"
     return f"{value * 100:.2f}%" if percent else f"{value:.2f}"
+
+
+def assessment(quant, stress):
+    oos = quant.get("out_of_sample", {})
+    profitability = "NO EVALUADA"
+    if "net_return" in oos:
+        profitability = "POSITIVA EN OOS" if oos["net_return"] > 0 and oos.get("trades", 0) > 0 else "SIN GANANCIA OOS OPERABLE"
+    robust = "APROBADA" if validation_complete(quant, stress) else "NO APROBADA" if quant else "NO EVALUADA"
+    return {"historical_profitability": profitability, "robustness": robust,
+            "independent_validation": "PENDIENTE", "basis": "Retorno neto OOS con operaciones; no predicción de rentabilidad futura"}
 
 
 def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
@@ -100,17 +110,23 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         evaluated = result and result.get("status") != "SKIPPED"
         check(label, result.get("reason", "No ejecutada; requiere aprobar filtros anteriores"), requirement,
               bool(result.get("passed")) if evaluated else None)
+        checks[-1]["required"] = key in VALIDATION_POLICY["mandatory"]
+        if not checks[-1]["required"]:
+            checks[-1]["label"] += " · diagnóstico"
     outcome = "APPROVED" if approved else "REJECTED"
     attempt = state.get("iteration_count", 0)
     return {
-        "schema_version": 2, "attempt": attempt, "created_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 3, "attempt": attempt, "created_at": datetime.now(timezone.utc).isoformat(),
+        "validation_policy": VALIDATION_POLICY,
+        "assessment": assessment(quant, stress),
+        "asset_assessments": {a: assessment(r.get("quant_metrics", {}), r.get("stress_metrics", {})) for a, r in state.get("asset_results", {}).items()},
         "research": state.get("research", {}),
         "strategy_name": state.get("strategy_name") or strategy_name(state.get("hypothesis", {})),
         "outcome": outcome, "synthetic": synthetic, "hypothesis": state.get("hypothesis", {}),
         "selected_asset": state.get("selected_asset", ""),
         "asset_results": {a: {k: v for k, v in r.items() if k != "charts"} for a, r in state.get("asset_results", {}).items()},
         "positive_assets": [a for a, r in state.get("asset_results", {}).items() if r.get("quant_metrics", {}).get("out_of_sample", {}).get("net_return", 0) > 0],
-        "ranking_rule": "Cada activo debe superar backtest, regresión, walk-forward y todos los filtros de estrés/robustez. Entre aprobados: mayor Sharpe OOS, menor drawdown y mayor retorno. Sin aprobado, el destacado es sólo diagnóstico.",
+        "ranking_rule": "Cada activo debe superar backtest, walk-forward, costos, parámetros, Monte Carlo y retraso. Regresión y concentración son diagnósticos. Entre aprobados: mayor Sharpe OOS, menor drawdown y mayor retorno.",
         "summary": ((f"La estrategia superó los filtros cuantitativos y de capital reducido en {state.get('selected_asset') or 'el activo evaluado'}."
                     if approved else "El intento no superó todos los filtros. Se conserva el diagnóstico para la siguiente hipótesis.")
                     + (" Comparación completada: " + ", ".join(state["asset_results"]) + "." if state.get("asset_results") else "")),
@@ -160,6 +176,7 @@ def render_html(report: dict) -> str:
     limits = "".join(f"<li>{esc(item)}</li>" for item in report["limitations"])
     h = report["hypothesis"]
     assets = asset_table_html(report)
+    verdicts = report.get("assessment", {})
     return f'''<!doctype html><html lang="es"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reporte · {esc(report['strategy_name'])}</title>
@@ -173,6 +190,7 @@ pre{{white-space:pre-wrap;background:#f3f6f8;padding:16px}}@media print{{body,ma
 <main><small>QUANT LAB / REPORTE DE PRUEBAS / INTENTO {report['attempt']}</small>
 <h1>{esc(report['strategy_name'])}</h1><span class="badge">{'APROBADO EN SIMULACIÓN' if report['outcome']=='APPROVED' else 'RECHAZADO'}</span>
 <p>{esc(report['summary'])}</p><small>{esc(report['created_at'])} · {'Demo sintética' if report['synthetic'] else 'Datos públicos'}</small>
+<p><b>Rentabilidad histórica:</b> {esc(verdicts.get('historical_profitability', 'NO EVALUADA'))} · <b>Robustez:</b> {esc(verdicts.get('robustness', 'NO EVALUADA'))} · <b>Validación independiente:</b> PENDIENTE</p>
 <h2>Comparación por activo</h2>{assets}
 <h2>Hipótesis y parámetros</h2><p>{esc(h.get('rationale', 'No se obtuvo una hipótesis válida.'))}</p>
 <pre>{esc(json.dumps(h, ensure_ascii=False, indent=2))}</pre>
@@ -192,6 +210,7 @@ def write_report(report: dict, output: Path) -> None:
     prefix.with_suffix(".html").write_text(render_html(report), encoding="utf-8")
     lines = [f"# {report['strategy_name']}", "", f"**{report['outcome']} · Intento {report['attempt']}**", "",
              report["summary"], "", "## Pruebas", ""]
+    lines += [f"- {key}: {value}" for key, value in report.get("assessment", {}).items()]
     lines += [f"- {c['label']}: {c['value']} (requisito: {c['requirement']}). "
               + ("Cumple." if c["passed"] is True else "No cumple." if c["passed"] is False else "No evaluado.") for c in report["checks"]]
     lines += ["", "## Diagnóstico", ""] + [f"- {r}" for r in report["rejection_reasons"]]

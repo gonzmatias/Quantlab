@@ -158,7 +158,7 @@ class ValidationTests(unittest.TestCase):
             "walk_forward": {"passed": False, "status": "SKIPPED", "reason": "previous failure"}}}
         report = build_report(state, asdict(Settings()), True)
         checks = {c["label"]: c for c in report["checks"]}
-        self.assertIs(checks["Regresión histórica alfa/beta"]["passed"], False)
+        self.assertIs(checks["Regresión histórica alfa/beta · diagnóstico"]["passed"], False)
         self.assertIsNone(checks["Walk-forward cronológico"]["passed"])
         self.assertIn("negative alpha", render_html(report))
 
