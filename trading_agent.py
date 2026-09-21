@@ -33,6 +33,7 @@ from langgraph.graph import END, START, StateGraph
 from report_agent import build_report, strategy_name, write_report
 from research import ResearchBrief, extract_web_evidence, validate_brief
 from research_memory import ResearchMemory, diagnose
+from mql5_export import export_mql5
 from strategy_rules import RuleProgram, RULE_HELP, program_signals, program_requirements
 from research_data import enrich_datasets, load_evidence_series, data_catalogue, acquire_evidence, training_diagnostics
 from validation import (regression_test, walk_forward_test, parameter_stress, monte_carlo_test,
@@ -48,6 +49,7 @@ class AgentState(TypedDict):
     quant_metrics: dict
     stress_metrics: dict
     production_code: str
+    mql5_export: dict
     iteration_count: int
     logs: List[str]
     status: str
@@ -409,7 +411,7 @@ if __name__ == "__main__":
 
 def initial_state() -> AgentState:
     return {"research": {}, "hypothesis": {}, "prototype_code": "", "quant_metrics": {}, "stress_metrics": {},
-            "production_code": "", "iteration_count": 0, "logs": [], "status": "RESEARCHING", "history": [],
+            "production_code": "", "mql5_export": {}, "iteration_count": 0, "logs": [], "status": "RESEARCHING", "history": [],
             "strategy_name": "Preparando investigación", "current_stage": "idle", "lifecycle": "IDLE",
             "charts": {}, "reports": [], "latest_report": {}, "report_count": 0,
             "asset_results": {}, "active_asset": "", "selected_asset": "", "asset_progress": {}}
@@ -695,7 +697,7 @@ class TradingAgent:
         self.variant_screen = {}
         attempt = state["iteration_count"] + 1
         reset = {"iteration_count": attempt, "status": "RESEARCHING", "hypothesis": {}, "research": {},
-                 "prototype_code": "", "production_code": "", "quant_metrics": {}, "stress_metrics": {},
+                 "prototype_code": "", "production_code": "", "mql5_export": {}, "quant_metrics": {}, "stress_metrics": {},
                  "charts": {}, "latest_report": {}, "strategy_name": "Generando una nueva hipótesis",
                  "asset_results": {}, "selected_asset": "", "active_asset": "", "asset_progress": {}}
         try:
@@ -1015,8 +1017,25 @@ class TradingAgent:
             + json.dumps({"h": state["hypothesis"], "q": state["quant_metrics"], "s": state["stress_metrics"]}))
         source = strategy_source(state["hypothesis"], self.cfg, {**notes.model_dump(), "asset": state.get("selected_asset"), "research_data_directory": str((self.output / "research_data").resolve()), "external_sources": self.evidence_metadata})
         (self.output / "production_strategy.py").write_text(source, encoding="utf-8")
-        return {"production_code": source, "status": "APPROVED",
-                "logs": self.log(state, "Exportado motor de simulación aprobado; validación independiente pendiente")}
+        return {"production_code": source, "status": "EXPORTING",
+                "logs": self.log(state, "Simulador Python guardado; preparar exportación MQL5")}
+
+    def mql5_export_node(self, state: AgentState) -> dict:
+        if self.demo:
+            return {"status": "REJECTED", "mql5_export": {},
+                    "logs": self.log(state, "Datos sintéticos: no se exporta un EA aprobado")}
+        if not validation_complete(state.get("quant_metrics", {}), state.get("stress_metrics", {})):
+            raise RuntimeError("MQL5 requiere todos los filtros obligatorios aprobados")
+        if state.get("status") != "EXPORTING" or not state.get("production_code"):
+            raise RuntimeError("MQL5 requiere el simulador congelado de esta estrategia")
+        self.check_stop()
+        asset = state.get("selected_asset") or "CUSTOM"
+        folder = self.output.parent / "mql5" / self.output.name / f"attempt_{state['iteration_count']:02}_{asset}"
+        artifact = export_mql5(state["hypothesis"], asset, self.data, folder,
+                               hypothesis_signature(state["hypothesis"]), asdict(self.cfg), self.check_stop)
+        return {"mql5_export": artifact, "status": "APPROVED",
+                "logs": self.log(state, "EA MQL5 guardado: " + artifact["source"] +
+                                 "; compilación MetaEditor y validación MT5 pendientes")}
 
     def should_continue_after_quant(self, state: AgentState) -> str:
         if state["quant_metrics"].get("passed") and state["status"] != "REJECTED":
@@ -1083,7 +1102,7 @@ class TradingAgent:
                            "iteration_count": state["iteration_count"] + 1,
                            "hypothesis": {}, "research": {}, "status": "RESEARCHING",
                            "quant_metrics": {}, "stress_metrics": {}, "charts": {}, "latest_report": {}}
-                visible.update(asset_results={}, active_asset="", selected_asset="", asset_progress={})
+                visible.update(asset_results={}, active_asset="", selected_asset="", asset_progress={}, mql5_export={})
             self.emit(visible)
             self.save(visible)
             return {**getattr(self, name)(state), "current_stage": name, "lifecycle": "RUNNING"}
@@ -1091,14 +1110,17 @@ class TradingAgent:
 
     def build_graph(self):
         graph = StateGraph(AgentState)
-        for name in ("researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "production_coder_node", "reporter_node"):
+        for name in ("researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "production_coder_node", "mql5_export_node", "reporter_node"):
             graph.add_node(name, self.observed_node(name))
         graph.add_edge(START, "researcher_node")
         graph.add_edge("researcher_node", "prototyper_node")
         graph.add_edge("prototyper_node", "quant_validator_node")
-        graph.add_conditional_edges("quant_validator_node", self.should_continue_after_quant)
-        graph.add_conditional_edges("stress_test_node", self.should_continue_after_stress)
-        graph.add_edge("production_coder_node", "reporter_node")
+        graph.add_conditional_edges("quant_validator_node", self.should_continue_after_quant,
+                                    {"stress_test_node": "stress_test_node", "reporter_node": "reporter_node"})
+        graph.add_conditional_edges("stress_test_node", self.should_continue_after_stress,
+                                    {"production_coder_node": "production_coder_node", "reporter_node": "reporter_node"})
+        graph.add_edge("production_coder_node", "mql5_export_node")
+        graph.add_edge("mql5_export_node", "reporter_node")
         # Un intento por invocación. El supervisor vuelve a START con el mismo estado.
         # Así el límite de pasos del grafo no se convierte en un límite de intentos.
         graph.add_edge("reporter_node", END)
@@ -1123,13 +1145,13 @@ class TradingAgent:
                 if self.should_continue_after_report(state) == END:
                     break
         except (RunCancelled, KeyboardInterrupt):
-            state = {**self.latest_state, "status": "REJECTED", "lifecycle": "CANCELLED", "production_code": "",
+            state = {**self.latest_state, "status": "REJECTED", "lifecycle": "CANCELLED", "production_code": "", "mql5_export": {},
                      "logs": self.log(self.latest_state, "Búsqueda detenida por el usuario")}
             self.save(state)
             self.emit(state)
             return state
         except Exception as exc:
-            state = {**self.latest_state, "status": "REJECTED", "lifecycle": "ERROR", "production_code": "",
+            state = {**self.latest_state, "status": "REJECTED", "lifecycle": "ERROR", "production_code": "", "mql5_export": {},
                      "logs": self.log(self.latest_state, f"Fallo operativo: {type(exc).__name__}: {exc}")}
             self.save(state)
             self.emit(state)

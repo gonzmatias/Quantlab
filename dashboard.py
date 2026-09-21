@@ -196,6 +196,15 @@ def create_server(port: int, manager: JobManager | None = None):
                     if path.is_file():
                         types = {"json": "application/json; charset=utf-8", "html": "text/html; charset=utf-8", "md": "text/markdown; charset=utf-8"}
                         return self.send(200, path.read_bytes(), types[extension], path.name if "download" in parse_qs(url.query) else None)
+            if url.path in ("/api/mql5/source", "/api/mql5/bundle"):
+                with jobs.lock:
+                    artifact = jobs.state.get("mql5_export", {})
+                    key = "source" if url.path.endswith("/source") else "bundle"
+                    if jobs.state["status"] == "APPROVED" and artifact.get("status") == "EXPORTED" and artifact.get(key):
+                        path = Path(artifact[key])
+                        if path.is_file():
+                            content_type = "text/plain; charset=utf-8" if key == "source" else "application/zip"
+                            return self.send(200, path.read_bytes(), content_type, path.name)
             if url.path == "/api/production":
                 with jobs.lock:
                     if jobs.state["status"] == "APPROVED" and jobs.output:

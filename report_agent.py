@@ -125,6 +125,7 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         "research": state.get("research", {}),
         "strategy_name": state.get("strategy_name") or strategy_name(state.get("hypothesis", {})),
         "outcome": outcome, "synthetic": synthetic, "hypothesis": state.get("hypothesis", {}),
+        "mql5_export": state.get("mql5_export", {}),
         "selected_asset": state.get("selected_asset", ""),
         "asset_results": {a: {k: v for k, v in r.items() if k != "charts"} for a, r in state.get("asset_results", {}).items()},
         "positive_assets": [a for a, r in state.get("asset_results", {}).items() if r.get("quant_metrics", {}).get("out_of_sample", {}).get("net_return", 0) > 0],
@@ -149,7 +150,7 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
                         "Costos y mínimos por activo son supuestos editables, no tarifas verificadas. FX/oro incluyen débito diario supuesto; sin apalancamiento ni créditos de swap.",
                         "Cada combinación estrategia-activo cuenta en el ajuste por múltiples pruebas. La clasificación depende de estos cinco activos, este período y estos costos.",
                         "Dukascopy: OHLC BID; CAD/USD invierte USD/CAD (referencia ASK). BTC: operaciones spot Coinbase. Los extremos diarios no reproducen el libro de órdenes.",
-                        "El código exportado no envía órdenes reales."],
+                        "El simulador Python no envía órdenes. El EA MQL5 puede operar al habilitar EnableTrading; compilación y validación MT5 pendientes."],
     }
 
 
@@ -197,6 +198,7 @@ pre{{white-space:pre-wrap;background:#f3f6f8;padding:16px}}@media print{{body,ma
 <h2>Hipótesis y parámetros</h2><p>{esc(h.get('rationale', 'No se obtuvo una hipótesis válida.'))}</p>
 <pre>{esc(json.dumps(h, ensure_ascii=False, indent=2))}</pre>
 {research_html(report)}
+<h2>Exportación MQL5</h2><pre>{esc(json.dumps(report.get("mql5_export", {}), ensure_ascii=False, indent=2))}</pre>
 <h2>Resultados frente a los filtros</h2><table><thead><tr><th>Prueba</th><th>Resultado</th><th>Requisito</th><th>Estado</th></tr></thead><tbody>{rows}</tbody></table>
 <details><summary>Detalle de regresión, walk-forward y robustez</summary><pre>{esc(json.dumps({'quant': report['quant_metrics'].get('advanced_tests', {}), 'stress': report['stress_metrics'].get('robustness_tests', {})}, ensure_ascii=False, indent=2))}</pre></details>
 <h2>Capital durante las pruebas</h2>{charts or '<p>No se ejecutaron pruebas con curva de capital.</p>'}
@@ -216,6 +218,8 @@ def write_report(report: dict, output: Path) -> None:
     lines += [f"- {c['label']}: {c['value']} (requisito: {c['requirement']}). "
               + ("Cumple." if c["passed"] is True else "No cumple." if c["passed"] is False else "No evaluado.") for c in report["checks"]]
     lines += ["", "## Diagnóstico", ""] + [f"- {r}" for r in report["rejection_reasons"]]
+    if report.get("mql5_export"):
+        lines += ["", "## Exportación MQL5", "", "```json", json.dumps(report["mql5_export"], ensure_ascii=False, indent=2), "```"]
     lines += ["", report["next_action"], "", "## Limitaciones", ""] + [f"- {r}" for r in report["limitations"]]
     lines += ["", "## Investigación y procedencia", "", "```json",
               json.dumps(report.get("research", {}), ensure_ascii=False, indent=2), "```",

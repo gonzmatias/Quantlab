@@ -67,6 +67,12 @@ class ReportingTests(unittest.TestCase):
             self.assertEqual(result["iteration_count"],1)
             self.assertEqual(result["latest_report"]["outcome"],"APPROVED")
             self.assertTrue((agent.output/"production_strategy.py").exists())
+            artifact = result["mql5_export"]
+            self.assertEqual(artifact["status"], "EXPORTED")
+            self.assertTrue(Path(artifact["source"]).is_file())
+            self.assertTrue(Path(artifact["bundle"]).is_file())
+            self.assertEqual(result["latest_report"]["mql5_export"], artifact)
+            self.assertIn("mql5", Path(artifact["source"]).parts)
 
 
 class DashboardHTTPTests(unittest.TestCase):
@@ -129,6 +135,27 @@ class DashboardHTTPTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as caught:
             urlopen(self.base+"/api/report/../state.json")
         self.assertEqual(caught.exception.code,404)
+
+    def test_mql_downloads_require_approved_export(self):
+        folder = Path(self.tmp.name)/"ea"
+        folder.mkdir()
+        source, bundle = folder/"strategy.mq5", folder/"strategy_bundle.zip"
+        source.write_text("// test fixture", encoding="utf-8")
+        bundle.write_bytes(b"test bundle")
+        with self.manager.lock:
+            self.manager.state["mql5_export"] = {"status": "EXPORTED", "source": str(source), "bundle": str(bundle)}
+        for endpoint in ("source", "bundle"):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.base+"/api/mql5/"+endpoint)
+            self.assertEqual(caught.exception.code,404)
+        with self.manager.lock:
+            self.manager.state["status"] = "APPROVED"
+        with urlopen(self.base+"/api/mql5/source") as response:
+            self.assertIn("strategy.mq5", response.headers["Content-Disposition"])
+            self.assertEqual(response.read(), source.read_bytes())
+        with urlopen(self.base+"/api/mql5/bundle") as response:
+            self.assertEqual(response.headers["Content-Type"], "application/zip")
+            self.assertEqual(response.read(), bundle.read_bytes())
 
     def test_stop_endpoint(self):
         self.manager.busy=True

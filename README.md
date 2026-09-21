@@ -73,7 +73,71 @@ si dejan de responder; no se eluden verificaciones de navegador.
    superaron todos los filtros. Las pruebas omitidas se distinguen de las fallidas.
 5. Generar: entre los aprobados en ambos filtros, selecciona mayor Sharpe OOS,
    luego menor drawdown y mayor retorno. Exporta el simulador del activo elegido.
-6. Reportar: conserva resultados de los cinco. Sin aprobación vuelve a investigar.
+6. Exportar MQL5: un nodo dedicado genera el Expert Advisor con las mismas reglas,
+   sus dependencias de datos y el paquete de descarga. La ejecución sólo termina
+   como aprobada después de guardar los artefactos. Demo y rechazos no exportan EAs.
+7. Reportar: conserva resultados de los cinco. Sin aprobación vuelve a investigar.
+
+### Exportación a MetaTrader 5 mediante LangGraph
+
+El grafo ejecuta `production_coder_node → mql5_export_node → reporter_node` después
+de superar todos los filtros obligatorios. `mql5_export_node` verifica de nuevo las
+condiciones y traduce el AST de las reglas probadas, sin pedir al LLM que invente
+otra implementación. El simulador Python se conserva para reproducibilidad.
+
+Cada estrategia aprobada se guarda en:
+
+```text
+outputs/mql5/<ejecución>/attempt_<número>_<activo>/
+  strategy.mq5
+  strategy_bundle.zip
+  manifest.json
+  reference_signals.csv
+  README.md
+  quantlab_<firma>_features.csv  # cuando hay datos auxiliares
+```
+
+El panel permite descargar el MQL5 o el ZIP con todos sus archivos. El manifest
+registra la hipótesis, firma, hashes, datos requeridos y estado de compilación.
+Los nombres de carpeta dependen del intento y activo, nunca del texto del modelo.
+
+El EA evalúa reglas compuestas y las ocho familias heredadas. Calcula señales con
+velas D1 cerradas y actúa al primer tick de la siguiente vela; mantiene entradas y
+salidas independientes, stops/objetivos al cierre y límite de tenencia. Usa el mismo
+tratamiento de ventanas y NaN, incluida la semántica EMA de la versión de pandas
+con la que se exportó. No sustituye una media por un indicador del bróker con otra
+inicialización. Se incluyen señales Python de referencia para comparar en MT5.
+
+OHLC y calendario se calculan con las velas del símbolo configurado. Volumen, series
+externas y columnas cruzadas se exportan como CSV, ya alineadas de forma causal.
+Copiar ese CSV a `Terminal/Common/Files`; una fecha ausente impide nuevas entradas,
+manteniendo los cierres por stop, objetivo o tenencia cuando hay precios disponibles.
+El archivo sólo contiene el snapshot existente: para fechas nuevas debe actualizarse
+con el mismo proceso y fuentes. No hay sustitución automática por tick volume.
+
+`EnableTrading=false` por defecto permite observar señales. Cambiarlo habilita órdenes
+en el entorno donde se ejecute el EA. `StrategyCapitalUSD=100` fija el capital inicial,
+actualizado con resultados y costos del historial del símbolo/magic. El nocional se
+limita a ese saldo sin apalancamiento; se respetan contrato, lote mínimo, paso,
+margen disponible y moneda USD. No reutilizar el magic para operaciones ajenas.
+El símbolo y su orientación deben corresponder al activo validado: CADUSD no se
+convierte silenciosamente en una compra de USDCAD. Sólo se gestiona una posición
+propia por símbolo y magic; posiciones ajenas y órdenes pendientes bloquean acciones.
+
+La generación del `.mq5` no certifica su compilación ni equivalencia con un bróker.
+Sin MetaEditor/MT5, los estados son `PENDING_METAEDITOR` y `PENDING_STRATEGY_TESTER`.
+Compilar en MetaEditor y comparar en Strategy Tester con los datos de referencia.
+Revisar horarios de sesiones, DST, OHLC, divisas, spread, swaps y contratos; el ajuste
+de fecha UTC no convierte sesiones distintas. El código comprueba los resultados
+de las solicitudes de trading. No se inicia MetaTrader ni se colocan órdenes al exportar.
+
+Las pruebas locales ejecutan los cuerpos numéricos MQL con una adaptación C++ para
+compararlos con Python, además de verificar el grafo, los filtros y las descargas.
+Esta comprobación no sustituye al compilador MetaEditor ni al Strategy Tester.
+
+Referencias oficiales: [CopyRates](https://www.mql5.com/en/docs/series/copyrates),
+[CTrade.Buy](https://www.mql5.com/en/docs/standardlibrary/tradeclasses/ctrade/ctradebuy),
+[FileOpen y FILE_COMMON](https://www.mql5.com/en/docs/files/fileopen).
 
 ### Pruebas por activo
 

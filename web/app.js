@@ -1,13 +1,14 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const token = document.querySelector('meta[name="session-token"]').content;
-const stages = ["researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "production_coder_node", "reporter_node"];
+const stages = ["researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "production_coder_node", "mql5_export_node", "reporter_node"];
 const descriptions = {
   researcher_node: "Buscando fuentes, comprobando compatibilidad y formulando una hipótesis verificable con datos de entrenamiento.",
   prototyper_node: "El agente convierte la hipótesis en un prototipo reproducible.",
   quant_validator_node: "Backtest, regresión histórica y walk-forward. Si un activo falla, se evalúa el siguiente.",
   stress_test_node: "Estrés de costos y parámetros, Monte Carlo, retraso de señales y concentración de beneficios.",
-  production_coder_node: "Preparando el módulo de simulación con las reglas que superaron las pruebas.",
+  production_coder_node: "Guardando el simulador con las reglas que superaron las pruebas.",
+  mql5_export_node: "Exportando el Expert Advisor MQL5 y sus datos auxiliares.",
   reporter_node: "El agente de reportes está documentando la evidencia y la decisión."
 };
 let mode = "public", revision = -1, snapshot = null, selectedAttempt = null, selectedReport = null;
@@ -128,7 +129,7 @@ function render(data) {
   $("liveLabel").textContent = busy ? "● EN VIVO" : "EN ESPERA"; $("liveLabel").classList.toggle("active",busy);
   document.querySelectorAll(".pipeline > div").forEach((element) => {
     const name = element.dataset.stage;
-    const completed = name === "researcher_node" ? Boolean(s.hypothesis?.family) : name === "prototyper_node" ? Boolean(s.quant_metrics?.in_sample) || stages.indexOf(s.current_stage)>1 && !!s.hypothesis?.family : name === "quant_validator_node" ? !!s.quant_metrics?.in_sample : name === "stress_test_node" ? !!s.stress_metrics?.scenarios : name === "production_coder_node" ? s.status === "APPROVED" : (s.reports || []).some(r=>r.attempt===s.iteration_count);
+    const completed = name === "researcher_node" ? Boolean(s.hypothesis?.family) : name === "prototyper_node" ? Boolean(s.quant_metrics?.in_sample) || stages.indexOf(s.current_stage)>1 && !!s.hypothesis?.family : name === "quant_validator_node" ? !!s.quant_metrics?.in_sample : name === "stress_test_node" ? !!s.stress_metrics?.scenarios : name === "production_coder_node" ? ["EXPORTING","APPROVED"].includes(s.status) : name === "mql5_export_node" ? s.mql5_export?.status === "EXPORTED" : (s.reports || []).some(r=>r.attempt===s.iteration_count);
     element.classList.toggle("active", busy && s.current_stage === name);
     element.classList.toggle("done", completed && !(busy && s.current_stage===name));
     element.classList.toggle("skipped", s.current_stage==="reporter_node" && !completed && name!=="reporter_node");
@@ -201,9 +202,13 @@ async function loadReport(attempt, scroll) {
     $("reportPanel").classList.remove("hidden"); $("reportTitle").textContent = `#${String(attempt).padStart(2,'0')} · ${report.strategy_name} · ${report.selected_asset || ""}`;
     $("downloadHtml").href=`/api/report/${attempt}.html?download=1`; $("downloadJson").href=`/api/report/${attempt}.json?download=1`;
     $("downloadCode").classList.toggle("hidden",report.outcome!=="APPROVED");
+    const hasMql = report.outcome === "APPROVED" && report.mql5_export?.status === "EXPORTED";
+    $("downloadMql").classList.toggle("hidden", !hasMql);
+    $("downloadBundle").classList.toggle("hidden", !hasMql);
     const h=report.hypothesis, ok=report.outcome==="APPROVED";
     const parameters = h.family ? [['Asignación',pct(h.allocation)],['Stop nominal',pct(h.stop_loss)],['Objetivo nominal',pct(h.take_profit)],['Tenencia máx.',`${h.max_holding} barras`]] : [];
     $("reportContent").innerHTML=`<div class="report-summary ${ok?'success':''}"><span class="symbol">${ok?'✓':'↻'}</span><div><h4>${ok?'Filtros superados · aprobado en simulación':'Intento rechazado · diagnóstico disponible'}</h4><p>${escapeHtml(report.summary)} ${escapeHtml(report.next_action)}</p></div></div><p class="report-copy">${escapeHtml(h.rationale || 'No se obtuvo una hipótesis válida en este intento.')}</p><div class="params">${parameters.map(([key,value])=>`<span>${escapeHtml(key)} <b>${escapeHtml(value)}</b></span>`).join('')}</div><h4 class="report-section-title">Resultados frente a los criterios de aprobación</h4><div class="check-grid">${report.checks.map(c=>`<div class="check ${c.required===false?'skip':c.passed===false?'fail':c.passed===null?'skip':''}"><span class="indicator">${c.required===false?'i':c.passed===true?'✓':c.passed===false?'×':'—'}</span><div><strong>${escapeHtml(c.label)}</strong><p>${escapeHtml(c.value)}</p><small>${escapeHtml(c.requirement)}</small></div></div>`).join('')}</div>${report.rejection_reasons.length?`<h4 class="report-section-title">Motivos de rechazo</h4><ul class="reasons">${report.rejection_reasons.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul>`:''}<div class="limitations">${report.limitations.map(l=>escapeHtml(l)).join('<br>')}</div>`;
+    if (hasMql) $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Expert Advisor MQL5</h4><p>${escapeHtml(report.mql5_export.source)}</p><p>Archivo generado. Compilación en MetaEditor y validación en Strategy Tester pendientes.</p>`);
     if (h.program) {
       $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Reglas investigadas</h4><p><strong>Entrada:</strong> <code>${escapeHtml(h.program.entry)}</code></p><p><strong>Salida:</strong> <code>${escapeHtml(h.program.exit)}</code></p><div class="params">${h.program.parameters.map(p=>`<span>${escapeHtml(p.name)} <b>${escapeHtml(p.value)}</b></span>`).join('')}</div>`);
     }
