@@ -4,6 +4,15 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="session-token" content="__SESSION_TOKEN__">
   <title>Quant Lab · Investigación de estrategias</title>
+  <script>
+    // Apply the theme before the first paint, even when storage is unavailable.
+    (() => {
+      let theme;
+      try { theme = localStorage.getItem('quantlab-theme'); } catch {}
+      document.documentElement.dataset.theme = theme === 'dark' || theme === 'light'
+        ? theme : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    })();
+  </script>
   <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
@@ -16,7 +25,7 @@
   <div class="sidebar-bottom"><span class="connection-dot" id="connectionDot"></span><span id="connectionText">Conectando al motor</span><small>Motor local · LangGraph</small></div>
 </aside>
 <main id="overview">
-  <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Investigación cuantitativa</strong></span><span class="local-pill">◉ LOCAL</span></header>
+  <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Investigación cuantitativa</strong></span><div class="topbar-actions"><button id="themeToggle" class="button secondary" type="button" aria-label="Modo oscuro" aria-pressed="false"><span id="themeIcon" aria-hidden="true">☾</span><span>Modo oscuro</span></button><span class="local-pill">◉ LOCAL</span></div></header>
   <div class="page-heading"><div><div class="eyebrow">DE LA HIPÓTESIS A LA EVIDENCIA</div><h1>Laboratorio de estrategias<span>.</span></h1><p>Observa cada prueba. Entiende cada resultado.</p></div><button id="settingsButton" class="button secondary">⚙ Configurar pruebas</button></div>
   <section class="panel" aria-label="Tipo de prueba">
     <label for="runMode">Tipo de prueba</label>

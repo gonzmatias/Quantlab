@@ -1,5 +1,30 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
+const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+let explicitTheme = false;
+try { explicitTheme = ['light', 'dark'].includes(localStorage.getItem('quantlab-theme')); } catch {}
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark';
+  $('themeToggle').setAttribute('aria-pressed', String(dark));
+  $('themeToggle').title = dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro';
+  $('themeIcon').textContent = dark ? '☀' : '☾';
+}
+applyTheme(document.documentElement.dataset.theme);
+$('themeToggle').onclick = () => {
+  const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  explicitTheme = true;
+  applyTheme(theme);
+  try { localStorage.setItem('quantlab-theme', theme); } catch {}
+};
+systemTheme.addEventListener('change', (event) => {
+  if (!explicitTheme) applyTheme(event.matches ? 'dark' : 'light');
+});
+window.addEventListener('storage', (event) => {
+  if (event.key !== 'quantlab-theme' && event.key !== null) return;
+  explicitTheme = ['light', 'dark'].includes(event.newValue);
+  applyTheme(explicitTheme ? event.newValue : (systemTheme.matches ? 'dark' : 'light'));
+});
 const token = document.querySelector('meta[name="session-token"]').content;
 const stages = ["researcher_node", "prototyper_node", "quant_validator_node", "stress_test_node", "final_validator_node", "production_coder_node", "mql5_export_node", "reporter_node"];
 const descriptions = {
