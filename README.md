@@ -1,4 +1,4 @@
-# Quant Lab · cinco activos y datos públicos
+# Quant Lab · investigación reproducible y contratos de ejecución
 
 ## Ejecutar
 
@@ -9,7 +9,7 @@
 Abre http://127.0.0.1:8765. Selecciona **Mercados públicos**, configura modelo y
 clave de IA en **Configurar pruebas**, y pulsa **Iniciar investigación**.
 También se admiten OPENAI_API_KEY y OPENAI_MODEL en el entorno.
-Los precios no requieren clave, Excel, CSV ni cargas manuales.
+La descarga pública diaria no requiere clave de mercado. Para datos intradía del intermediario, selecciona **Datos del intermediario** e indica un manifiesto JSON; ver [EXECUTION.md](EXECUTION.md).
 La demo usa cinco series sintéticas, no consume IA y nunca aprueba producción.
 
 La búsqueda tiene un presupuesto de **30 hipótesis** por defecto. Se detiene al agotarlo, al pulsar **Detener** o después de comprobar un candidato congelado sobre la reserva final, tanto si pasa como si falla.
@@ -18,6 +18,24 @@ trabajo; reiniciar el servidor no reanuda investigaciones anteriores.
 La cancelación es cooperativa; una descarga pendiente tiene timeout de 10s.
 Cancelar una solicitud de IA no revierte consumo ya recibido por el proveedor.
 
+
+## Cambios de la versión actual
+
+Se conservan AST, LangGraph, fuentes públicas, DSR, walk-forward, Monte Carlo,
+reserva global y exportación determinista. Se amplían capacidades sin presentar
+aproximaciones como verificación de ejecución real:
+
+- `direction` long/short y `timeframe` por hipótesis; BTC spot continúa sin shorts.
+- Manifiestos de CSV de contratos locales e intradía desde CLI y panel.
+- Separación causal de resolución de señal y ejecución; no se generan precios más finos.
+- Evidencia, conjeturas, supuestos y correspondencia entre mecanismo y reglas explícitos.
+- `NEEDS_CAPABILITY` conserva la idea en `outputs/hypotheses_backlog/`; no prueba que sea mala.
+- Auditoría de prefijos y modificación del futuro; experimento preliminar exclusivamente IS.
+- Perturbaciones conjuntas, diagnósticos de regímenes y placebos sin utilizarlos como confirmación independiente.
+- Auditoría SQLite append-only con cadena de hashes y copia `research_audit.json`.
+- Trazas de operaciones Python, registro shadow de cotizaciones/señales en el EA y comparación mediante `verify_execution.py`.
+
+Detalles y límites: [EXECUTION.md](EXECUTION.md), [VALIDATION.md](VALIDATION.md).
 
 ## Protocolo de investigación actual
 
@@ -28,7 +46,7 @@ Cancelar una solicitud de IA no revierte consumo ya recibido por el proveedor.
 - Todos los números en expresiones de investigación deben ser parámetros nombrados, incluso 0 y 1. Los rangos deben permitir variaciones reales, y los parámetros declarados deben utilizarse. El intérprete general sigue admitiendo constantes para compatibilidad y referencias pasivas.
 - El primer candidato que supera descubrimiento se congela en `candidate.json`, con hashes de reglas/configuración y snapshots en `candidate_data/`. No se selecciona otro candidato mirando la reserva final.
 - `outputs/holdout_ledger.sqlite3` consume el intervalo final **antes** de evaluarlo. Un fallo, cancelación o reinicio no lo restaura. El registro es global a estrategias y activos de esa carpeta; cambiar configuración no crea una prueba nueva. Conservar esa carpeta y no borrar el registro. No es un sistema resistente a manipulaciones deliberadas del usuario.
-- La reserva exige al menos 120 barras, 20 operaciones por defecto, rentabilidad y drawdown válidos con costos x1/x2/x3, comparación pasiva, Monte Carlo y retraso. Tanto pasar como fallar termina la búsqueda. Para otra reserva se requieren al menos 120 barras posteriores al último intervalo consumido; por ello las proporciones temporales pueden cambiar en ejecuciones posteriores.
+- La reserva exige al menos 120 barras de señal, un mínimo calendario predefinido (`forward_min_days=90` por defecto), 20 operaciones por defecto, rentabilidad y drawdown válidos con costos x1/x2/x3, comparación pasiva, Monte Carlo y retraso. Tanto pasar como fallar termina la búsqueda. Para otra reserva se requieren al menos 120 barras posteriores al último intervalo consumido; por ello las proporciones temporales pueden cambiar en ejecuciones posteriores.
 - El resultado positivo se presenta como **candidato histórico**. El estado interno `APPROVED` conserva compatibilidad con descargas, pero sólo se emite después de la reserva final y la exportación; no autoriza operativa real.
 
 ### Comprobación prospectiva del candidato
@@ -37,7 +55,7 @@ Cancelar una solicitud de IA no revierte consumo ya recibido por el proveedor.
 .\.venv\Scripts\python.exe forward_validate.py outputs\<ejecución>\candidate.json
 ```
 
-No usa IA ni modifica reglas. Espera 120 barras posteriores a la fecha real de congelación, prueba exactamente las primeras 120 y guarda `forward_validation.json`. Repetir el comando devuelve ese resultado; no amplía el período hasta conseguir ganancias. Una marca `forward_validation.started` evita repetir una prueba interrumpida. Los snapshots históricos y series auxiliares se verifican mediante hashes. `--research-data` permite añadir publicaciones nuevas sin sustituir valores previos ni cambiar su caducidad. Este comando simula precios posteriores; todavía requiere verificar señales/ejecución en MetaEditor, Strategy Tester y el intermediario objetivo.
+No usa IA ni modifica reglas. Espera al menos 120 barras de señal posteriores al instante real de congelación y `forward_min_days` días desde la primera barra prospectiva. Evalúa el primer intervalo que cumple ambos requisitos y guarda `forward_validation.json`. En D1 FX normalmente son las primeras 120 barras; en intradía el mínimo calendario evita confundir unas horas con una validación prospectiva. Los hashes del motor también deben coincidir con la revisión congelada. Repetir el comando devuelve ese resultado; no amplía el período hasta conseguir ganancias. Una marca `forward_validation.started` evita repetir una prueba interrumpida. Los snapshots históricos y series auxiliares se verifican mediante hashes. `--research-data` permite añadir publicaciones nuevas sin sustituir valores previos ni cambiar su caducidad. Este comando simula precios posteriores; todavía requiere verificar señales/ejecución en MetaEditor, Strategy Tester y el intermediario objetivo.
 
 Los históricos ya observados con versiones anteriores, las fuentes web actuales y el conocimiento del modelo pueden contaminar retrospectivamente una reserva histórica. El aislamiento de esta versión no borra esa información: la comprobación prospectiva sigue siendo necesaria. Ningún filtro garantiza encontrar una ventaja ni que ésta persista.
 
@@ -126,7 +144,7 @@ registra la hipótesis, firma, hashes, datos requeridos y estado de compilación
 Los nombres de carpeta dependen del intento y activo, nunca del texto del modelo.
 
 El EA evalúa reglas compuestas y las ocho familias heredadas. Calcula señales con
-velas D1 cerradas y actúa al primer tick de la siguiente vela; mantiene entradas y
+velas cerradas de la temporalidad declarada y actúa al primer tick de la siguiente vela; mantiene entradas y
 salidas independientes, stops/objetivos al cierre y límite de tenencia. Usa el mismo
 tratamiento de ventanas y NaN, incluida la semántica EMA de la versión de pandas
 con la que se exportó. No sustituye una media por un indicador del bróker con otra
@@ -174,7 +192,7 @@ No se reducen automáticamente durante la búsqueda. El capital es el mismo en d
 | Regresión histórica | OLS de retornos netos OOS de estrategia contra retornos diarios del propio activo; alfa/beta, errores Newey–West (HAC), mínimo 60 observaciones; alfa − 1,645 × error estándar > 0; diagnóstico, no bloquea aprobación |
 | Walk-forward | 3 ventanas forward sin solapamiento; entrenamiento previo creciente, separación de max_holding barras; reglas congeladas, sin reoptimización; al menos 2/3 ventanas válidas, ganancias agregadas y DD dentro del límite |
 | Costos | Capital configurado con costos x1/x2/x3; todos deben superar criterios de retorno, operaciones, DD y solvencia |
-| Parámetros | Cada parámetro ejecutable varía ±20%, uno por vez, dentro del esquema; mínimo 4 variantes y ≥80% con retorno/Sharpe positivos, operaciones suficientes, sin quiebra y DD aceptable |
+| Parámetros | Cada parámetro ejecutable varía ±20%, uno por vez, dentro del esquema; además 8 perturbaciones conjuntas deterministas por defecto. Se exige ≥80% en cada grupo por separado; mínimo 4 variantes individuales y ≥80% con retorno/Sharpe positivos, operaciones suficientes, sin quiebra y DD aceptable |
 | Monte Carlo | 1.000 trayectorias por bloque de 5, 10 y 20 barras (3.000 total); en cada grupo P(ganancia) ≥90%, DD percentil 95 ≤límite y ruina operativa ≤1% |
 | Retraso | Señales de entrada y salida por condición retrasadas una barra adicional; stops y límites de tenencia mantienen su lógica; exige retorno/Sharpe positivos, operaciones y DD válidos |
 | Concentración | Anula los retornos de los cinco mejores días positivos; el rendimiento compuesto restante debe seguir positivo; diagnóstico, no bloquea aprobación |
@@ -218,8 +236,8 @@ y lectura de fuentes lo realiza el modelo y requiere revisión humana. Las fuent
 actuales también pueden incorporar conocimiento posterior al período histórico.
 
 La investigación puede explorar mecanismos y fuentes fuera de los indicadores de
-precios. La ejecución disponible sigue siendo diaria, sobre los activos cargados,
-long-only y sin apalancamiento. El catálogo muestra cobertura y estadísticas sólo
+precios. La ejecución disponible sigue siendo sobre los contratos cargados,
+long o short cuando el contrato lo admite, sin apalancamiento. La señal puede ser M1/M5/M15/M30/H1/H4/D1 según la resolución de los datos; la fuente pública sigue siendo diaria. El catálogo muestra cobertura y estadísticas sólo
 sobre entrenamiento. Incluye OHLC, volumen real cuando el proveedor lo entrega,
 calendario, columnas cruzadas `market_<activo>_<campo>` y series externas.
 Los activos fuera del objetivo o sin los campos necesarios se marcan omitidos.
@@ -238,7 +256,7 @@ Python generado. Se admiten operaciones aritméticas, comparaciones, and/or/not 
 `col`, `lag`, `change`, `pct`, `sma`, `ema`, `std`, `lowest`, `highest`, `total`, `rank`,
 `quantile`, `corr`, `abs`, `log`, `sqrt`, `where`. Todas las ventanas miran hacia atrás.
 Esto amplía las hipótesis representables, pero no implementa cualquier algoritmo,
-entrenamiento ML, microestructura intradía ni cortos. Los límites de tamaño de
+entrenamiento ML arbitrario ni reconstrucción del libro de órdenes o ticks. Las necesidades no soportadas se conservan en el backlog. Los límites de tamaño de
 expresión y ventanas son controles de recursos del intérprete.
 
 Cada investigación debe justificar el enfoque elegido, qué conserva o cambia
@@ -324,7 +342,7 @@ impuestos ni el calendario exacto de rollover del intermediario.
 
 En BID se añade spread completo al comprar; en ASK inverso se resta al vender.
 En BTC se aplica medio spread por lado al precio de operaciones como aproximación.
-El estrés multiplica comisión, spread, deslizamiento y tenencia por 1, 2 y 3.
+El estrés multiplica comisión, spread, deslizamiento y tenencia por 1, 2 y 3. Se admiten costos variables por barra y bid/ask open/close observados; ver EXECUTION.md. La financiación se prorratea por tiempo calendario transcurrido, también en intradía.
 El modelo no reconstruye el libro de órdenes histórico. Los mínimos se aplican
 al abrir; se supone que se puede liquidar íntegramente una posición pequeña.
 
@@ -379,8 +397,8 @@ constituye automáticamente una nueva validación.
   regresión y concentración son diagnósticas.
 - Se reutiliza OOS adaptativamente. Una búsqueda ilimitada no garantiza hallar
   rentabilidad; los ajustes no reemplazan datos posteriores independientes.
-- Long-only, sin apalancamiento. Señales y stops al cierre, ejecución en apertura
-  siguiente. No fills intrabar. Drawdown medido al cierre.
+- Long/short por contrato, nocional sin apalancamiento. Señales y stops al cierre de señal, ejecución en apertura
+  posterior disponible. No fills de stops intrabar. Drawdown al cierre y cota inferior intrabar basada en high/low; ambos se contrastan con el límite. Esa cota no reconstruye máximos y mínimos secuenciales ni liquidez.
 - Los tres escenarios al capital configurado deben ganar, respetar DD, tener operaciones
   suficientes y evitar quiebra. El mínimo de operaciones no garantiza significancia.
 
@@ -400,3 +418,27 @@ exportación ya no realiza una llamada adicional a la IA ni envía métricas par
 redactar notas. Los filtros, las reglas y la reserva final no cambian por esta
 optimización. El ahorro exacto de tokens depende del modelo y del contexto; una
 reducción de caracteres no es una medición de tokens facturados.
+
+
+## Auditoría del investigador
+
+```powershell
+.\.venv\Scripts\python.exe research_scorecard.py outputs
+.\.venv\Scripts\python.exe calibrate_research.py --repetitions 10 --output outputs/calibration.json
+```
+
+El scorecard incluye todos los candidatos congelados presentes, aprobados, fallidos y
+pendientes. La calibración ejecuta los filtros de descubrimiento con reglas predeclaradas
+en mercados sintéticos nulos y con efecto bruto inyectado. No calibra la búsqueda web/LLM,
+no garantiza que el efecto bruto supere los costos y no consume reservas de producción.
+Una sola repetición es un smoke test, no una estimación de falsos positivos.
+
+El registro global conserva versiones de resultados y número acumulado de combinaciones.
+Los triggers evitan cambios accidentales y los hashes detectan alteraciones parciales;
+no protegen contra un administrador que borra todo. Guardar `research_audit.json` bajo
+custodia externa es necesario para reconciliar borrados o copias divergentes.
+
+Antes de actualizar un experimento antiguo, conservar su código y entorno. Los candidatos
+nuevos congelan hashes del motor: una revisión posterior no puede evaluarlos silenciosamente.
+La migración SQLite a versión 2 conserva tablas anteriores e incorpora un evento de base;
+no reconstruye investigaciones que ya fueron eliminadas.

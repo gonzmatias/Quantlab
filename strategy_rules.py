@@ -16,7 +16,7 @@ abs(x), log(x), sqrt(x), where(condition,a,b). All windows are trailing; lag n>=
 rank is the percentile of the latest value within its trailing window.
 Name every tunable number as a parameter with value, lower, upper, integer.
 Use separate entry and exit events. An entry need not remain true while holding.
-Signals are observed at daily close and executed at the following open.
+Signals are observed at the declared signal timeframe close and executed at a subsequent available execution open.
 Example: entry="pct(col('close'), horizon) > threshold",
 exit="col('close') < sma(col('close'), exit_window)".
 Do not use unavailable fields, future shifts, Python code, fitting on the full sample,

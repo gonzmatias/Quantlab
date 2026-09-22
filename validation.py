@@ -3,8 +3,9 @@ import math
 
 import numpy as np
 
-VALIDATION_POLICY = {"version": "3", "mandatory": ["benchmark", "walk_forward", "parameters", "monte_carlo", "signal_delay"],
-                     "diagnostic": ["regression", "concentration"]}
+VALIDATION_POLICY = {"version": "4", "mandatory": ["benchmark", "walk_forward", "parameters", "monte_carlo", "signal_delay"],
+                     "diagnostic": ["regression", "concentration", "preliminary", "regimes", "placebos"],
+                     "causality": "prefix invariance before statistical evaluation"}
 
 
 def validation_complete(quant, stress):
@@ -56,12 +57,13 @@ def regression_test(strategy_returns, market_returns, z_min=1.645, minimum=60):
 
 
 def summarize(result):
-    return {k: result[k] for k in ("net_return", "sharpe", "max_drawdown", "trades", "bankrupt")}
+    return {**{k: result[k] for k in ("net_return", "sharpe", "max_drawdown", "trades", "bankrupt")},
+            "intrabar_drawdown_lower_bound": result.get("intrabar_drawdown_lower_bound", 0)}
 
 
 def viable(result, cfg, min_trades=None):
     return (not result["bankrupt"] and result["net_return"] > 0 and result["sharpe"] > 0
-            and result["max_drawdown"] <= cfg.max_drawdown
+            and max(result["max_drawdown"], result.get("intrabar_drawdown_lower_bound", 0)) <= cfg.max_drawdown
             and result["trades"] >= (cfg.min_trades if min_trades is None else min_trades))
 
 
@@ -72,7 +74,8 @@ def walk_forward_test(data, h, cfg, split, simulate, checkpoint):
     the test windows. Each simulation starts flat and liquidates with costs.
     """
     boundaries = np.linspace(split, len(data), cfg.walk_forward_folds + 1, dtype=int)
-    gap = h["max_holding"]
+    from execution import TIMEFRAMES, bar_seconds
+    gap = h["max_holding"] * max(1, TIMEFRAMES.get(h.get("timeframe", "1d"), 86400)//bar_seconds(data))
     rows, joined = [], []
     fold_min = max(1, math.ceil(cfg.min_trades / cfg.walk_forward_folds))
     for start, end in zip(boundaries[:-1], boundaries[1:]):
@@ -93,7 +96,7 @@ def walk_forward_test(data, h, cfg, split, simulate, checkpoint):
     required = math.ceil(2 * cfg.walk_forward_folds / 3)
     passed = (sum(row["passed"] for row in rows) >= required and curve[-1] > 1 and dd <= cfg.max_drawdown
               and sum(row["testing"]["trades"] for row in rows) >= cfg.min_trades
-              and all(not row["testing"]["bankrupt"] and row["testing"]["max_drawdown"] <= cfg.max_drawdown for row in rows))
+              and all(not row["testing"]["bankrupt"] and max(row["testing"]["max_drawdown"], row["testing"].get("intrabar_drawdown_lower_bound", 0)) <= cfg.max_drawdown for row in rows))
     return {"passed": bool(passed), "status": "PASSED" if passed else "FAILED", "folds": rows,
             "required_passing_folds": required, "passing_folds": sum(row["passed"] for row in rows),
             "fold_min_trades": fold_min, "net_return": float(curve[-1] - 1), "max_drawdown": dd,
@@ -173,9 +176,51 @@ def parameter_stress(data, h, cfg, start, simulate, checkpoint):
     covered = {row["parameter"] for row in rows}
     required = {"rule:" + p["name"] for p in h.get("program", {}).get("parameters", [])} if h.get("program") else set()
     passed = fraction >= cfg.parameter_pass_min and len(rows) >= 4 and required.issubset(covered)
+    joint = []
+    for variant in joint_parameter_variants(h, cfg.joint_parameter_samples, cfg.seed):
+        checkpoint()
+        result = simulate(data, variant, cfg, cfg.capital, start, checkpoint=checkpoint)
+        joint.append({"hypothesis": variant, "passed": bool(viable(result, cfg)), "metrics": summarize(result)})
+    joint_fraction = sum(row["passed"] for row in joint) / len(joint) if joint else None
+    if cfg.joint_parameter_samples:
+        passed = passed and joint_fraction is not None and joint_fraction >= cfg.parameter_pass_min
     return {"passed": passed, "status": "PASSED" if passed else "FAILED", "scenarios": rows,
+            "joint_scenarios": joint, "joint_passing_fraction": joint_fraction,
             "passing_fraction": fraction, "required_fraction": cfg.parameter_pass_min,
             "reason": "Parámetros robustos" if passed else "Rendimiento frágil ante variaciones de parámetros"}
+
+
+def joint_parameter_variants(h, samples=8, seed=42):
+    """Predetermined joint perturbations; no search for the best performing variant."""
+    from copy import deepcopy
+    import json
+    groups = {}
+    for key, _, variant in parameter_variants(h):
+        groups.setdefault(key, []).append(variant)
+    if len(groups) < 2:
+        return
+    rng, seen = np.random.default_rng(seed), set()
+    for _ in range(samples * 10):
+        candidate = deepcopy(h)
+        keys = list(groups)
+        chosen = rng.choice(keys, size=int(rng.integers(2, len(keys)+1)), replace=False)
+        for key in chosen:
+            option = groups[key][int(rng.integers(len(groups[key])))]
+            if key.startswith("rule:"):
+                name = key[5:]
+                value = next(p["value"] for p in option["program"]["parameters"] if p["name"] == name)
+                next(p for p in candidate["program"]["parameters"] if p["name"] == name)["value"] = value
+            else:
+                candidate[key] = option[key]
+        if not candidate.get("program") and candidate["fast"] >= candidate["slow"]:
+            continue
+        signature = json.dumps(candidate, sort_keys=True)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        yield candidate
+        if len(seen) >= samples:
+            return
 
 
 def monte_carlo_test(returns, cfg, checkpoint):

@@ -12,6 +12,37 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
+def engine_hashes():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent
+    files = ("trading_agent.py", "execution.py", "strategy_rules.py", "research_data.py",
+             "validation.py", "experiment_protocol.py", "mql5_export.py", "mql5_runtime.mq5.tmpl")
+    return {name: hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}
+
+
+def confirmation_end(data, h, cfg, start):
+    """First eligible endpoint using timestamps only, without inspecting holdout returns."""
+    from execution import TIMEFRAMES, bar_seconds
+    if start >= len(data):
+        return None
+    base, target = bar_seconds(data), TIMEFRAMES.get(h.get("timeframe", "1d"))
+    if target is None or target < base or target % base:
+        return None
+    times = data.timestamp.iloc[start:]
+    if target == base:
+        closes = times
+    else:
+        grouped = times.groupby(times.dt.floor(f"{target}s"))
+        last, counts = grouped.max(), grouped.size()
+        complete = (counts == target//base) & (last == last.index + pd.Timedelta(seconds=target-base))
+        closes = last[complete]
+    horizon = times.iloc[0] + pd.Timedelta(days=cfg.forward_min_days)
+    if len(closes) < 120 or times.iloc[-1] < horizon:
+        return None
+    endpoint = max(closes.iloc[119], horizon)
+    return int(data.timestamp.searchsorted(endpoint, side="left")) + 1
+
+
 def partition(datasets):
     start = max(f.timestamp.iloc[0] for f in datasets.values())
     end = min(f.timestamp.iloc[-1] for f in datasets.values())
@@ -54,7 +85,7 @@ class HoldoutLedger:
 def benchmark_test(data, h, cfg, start, simulate):
     # Same allocation, fees, financing and rounding; no discretionary exits.
     baseline = {**h, "program": {"entry": "True", "exit": "False", "parameters": []},
-                "stop_loss": 1.0, "take_profit": 1e100, "max_holding": len(data) + 1}
+                "direction": "long", "stop_loss": 1.0, "take_profit": 1e100, "max_holding": len(data) + 1}
     strategy = simulate(data, h, cfg, cfg.capital, start)
     passive = simulate(data, baseline, cfg, cfg.capital, start)
     # Predeclared risk-adjusted improvement, with a lower-risk alternative path.
@@ -74,8 +105,8 @@ def evaluate_frozen(data, h, cfg, start, checkpoint=lambda: None):
     from trading_agent import backtest, compact
     from validation import viable, monte_carlo_test
     simulate = lambda *args, **kwargs: backtest(*args, **kwargs, checkpoint=checkpoint)
-    if len(data) - start < 120:
-        return {"passed": False, "status": "INSUFFICIENT_DATA", "reason": "Se requieren 120 barras nuevas"}
+    if confirmation_end(data, h, cfg, start) is None:
+        return {"passed": False, "status": "INSUFFICIENT_DATA", "reason": "Se requieren 120 barras de señal y el mínimo de días de evaluación predefinido"}
     results = {str(mult): simulate(data, h, cfg, cfg.capital, start, cost_multiplier=mult) for mult in (1, 2, 3)}
     benchmark = benchmark_test(data, h, cfg, start, simulate)
     mc = monte_carlo_test(results["1"]["returns"], cfg, checkpoint)

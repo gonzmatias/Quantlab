@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
+from execution import bar_seconds
 
 
 class DataAcquisition(BaseModel):
@@ -110,9 +111,9 @@ def load_evidence_series(folder):
 
 
 def enrich_datasets(datasets, evidence=None):
-    """Use external information strictly available before the target daily bar.
+    """Use external information available by the target execution bar.
 
-    A daily source candle is conservatively available at timestamp + 1 day.
+    A source candle is available at timestamp + its own bar duration.
     Source columns remain on the target calendar, with at most 7 days staleness.
     """
     enriched = {}
@@ -126,7 +127,7 @@ def enrich_datasets(datasets, evidence=None):
                 raise ValueError("Identificador de activo inválido")
             columns = [c for c in ("open", "high", "low", "close", "volume") if c in other]
             right = other[["timestamp", *columns]].copy()
-            right["timestamp"] += pd.Timedelta(days=1)
+            right["timestamp"] += pd.Timedelta(seconds=bar_seconds(other))
             right = right.rename(columns={c: f"market_{source.lower()}_{c}" for c in columns})
             frame = pd.merge_asof(frame, right, on="timestamp", direction="backward", tolerance=pd.Timedelta(days=7))
         for name, (observations, age) in (evidence or {}).items():

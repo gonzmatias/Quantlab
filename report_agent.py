@@ -131,6 +131,7 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
         "assessment": {**assessment(quant, stress), "historical_holdout": final.get("status", "PENDING")},
         "asset_assessments": {a: assessment(r.get("quant_metrics", {}), r.get("stress_metrics", {})) for a, r in state.get("asset_results", {}).items()},
         "research": state.get("research", {}),
+        "research_outcome": state.get("research", {}).get("outcome_category", state.get("status")),
         "strategy_name": state.get("strategy_name") or strategy_name(state.get("hypothesis", {})),
         "outcome": outcome, "synthetic": synthetic, "hypothesis": state.get("hypothesis", {}),
         "mql5_export": state.get("mql5_export", {}),
@@ -142,6 +143,7 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
                     if approved else "El intento no superó todos los filtros. Se conserva el diagnóstico para la siguiente hipótesis.")
                     + (" Comparación completada: " + ", ".join(state["asset_results"]) + "." if state.get("asset_results") else "")),
         "next_action": ("Comprobar en datos posteriores con forward_validate.py y verificar ejecución en MT5; no habilitar operativa por este resultado." if approved else
+                        "Candidato congelado sin consultar la reserva: esperar el horizonte requerido." if final.get("status") == "INSUFFICIENT_DATA" else
                         "Reserva final consumida: experimento cerrado; no reformular con sus resultados." if final else
                         "Límite de intentos alcanzado: búsqueda finalizada." if settings["max_iterations"] > 0 and attempt >= settings["max_iterations"] else
                         "Volver a investigación con los motivos de rechazo."),
@@ -155,7 +157,7 @@ def build_report(state: dict, settings: dict, synthetic: bool) -> dict:
                         "Monte Carlo remuestrea retornos netos históricos por bloques. No reconstruye ejecuciones ni eventos nunca observados; ruina operativa = pérdida del 95% del capital inicial.",
                         "Los umbrales de robustez son criterios configurados, no garantías estadísticas de rentabilidad futura. Una prueba fallida omite las posteriores de ese activo.",
                         "La evidencia exigida aumenta con los intentos; el ajuste secuencial no valida por sí solo un OOS adaptativo.",
-                        "Stops al cierre y ejecución en apertura siguiente; el drawdown es al cierre.",
+                        "Stops al cierre de señal y ejecución en apertura posterior; drawdown al cierre y cota inferior intrabar, sin reconstrucción del libro.",
                         "Costos y mínimos por activo son supuestos editables, no tarifas verificadas. FX/oro incluyen débito diario supuesto; sin apalancamiento ni créditos de swap.",
                         "Cada combinación estrategia-activo cuenta en el ajuste por múltiples pruebas. La clasificación depende de estos cinco activos, este período y estos costos.",
                         "Dukascopy: OHLC BID; CAD/USD invierte USD/CAD (referencia ASK). BTC: operaciones spot Coinbase. Los extremos diarios no reproducen el libro de órdenes.",
@@ -211,6 +213,7 @@ pre{{white-space:pre-wrap;background:#f3f6f8;padding:16px}}@media print{{body,ma
 <h2>Exportación MQL5</h2><pre>{esc(json.dumps(report.get("mql5_export", {}), ensure_ascii=False, indent=2))}</pre>
 <h2>Resultados frente a los filtros</h2><table><thead><tr><th>Prueba</th><th>Resultado</th><th>Requisito</th><th>Estado</th></tr></thead><tbody>{rows}</tbody></table>
 <details><summary>Detalle de regresión, walk-forward y robustez</summary><pre>{esc(json.dumps({'quant': report['quant_metrics'].get('advanced_tests', {}), 'stress': report['stress_metrics'].get('robustness_tests', {})}, ensure_ascii=False, indent=2))}</pre></details>
+<details><summary>Causalidad, experimento preliminar, regímenes y placebos</summary><pre>{esc(json.dumps({key: report['quant_metrics'].get(key) for key in ('causality', 'preliminary', 'regimes', 'placebos')}, ensure_ascii=False, indent=2))}</pre></details>
 <h2>Capital durante las pruebas</h2>{charts or '<p>No se ejecutaron pruebas con curva de capital.</p>'}
 <h2>Diagnóstico y siguiente paso</h2><ul>{reasons}</ul><p>{esc(report['next_action'])}</p>
 <h2>Alcance de la evidencia</h2><ul>{limits}</ul></main></html>'''
@@ -252,6 +255,8 @@ def research_html(report):
     if not brief:
         return "<h2>Investigación</h2><p>" + esc(research.get("summary", research.get("rejection_reason", "Sin ficha de investigación."))) + "</p>"
     labels = {"mechanism": "Mecanismo", "prediction": "Predicción", "falsification": "Criterio de descarte",
+              "origin": "Origen", "assumptions": "Supuestos", "rule_mapping": "Correspondencia mecanismo-reglas",
+              "execution_requirements": "Requisitos de ejecución",
               "adaptation": "Adaptación", "parameter_reasoning": "Justificación de parámetros",
               "compatibility_reason": "Compatibilidad", "research_approach": "Enfoque de investigación",
               "change_from_previous": "Cambio frente a intentos anteriores", "contrary_evidence": "Evidencia contraria",

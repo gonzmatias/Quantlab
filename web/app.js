@@ -23,7 +23,7 @@ const money = (v) => new Intl.NumberFormat("es-PY",{style:"currency",currency:"U
 function renderResearch(report) {
   const research = report.research || {}, brief = research.brief;
   if (!brief) return `<h4 class="report-section-title">Investigación</h4><p>${escapeHtml(research.summary || research.rejection_reason || 'Sin ficha de investigación.')}</p>`;
-  const labels = {mechanism:'Mecanismo',prediction:'Predicción',falsification:'Criterio de descarte',adaptation:'Adaptación',parameter_reasoning:'Justificación de parámetros',compatibility_reason:'Compatibilidad',research_approach:'Enfoque de investigación',change_from_previous:'Cambio frente a intentos anteriores',contrary_evidence:'Evidencia contraria',data_requests:'Datos pendientes'};
+  const labels = {origin:'Origen',assumptions:'Supuestos',rule_mapping:'Correspondencia entre mecanismo y reglas',execution_requirements:'Necesidades de ejecución',mechanism:'Mecanismo',prediction:'Predicción',falsification:'Criterio de descarte',adaptation:'Adaptación',parameter_reasoning:'Justificación de parámetros',compatibility_reason:'Compatibilidad',research_approach:'Enfoque de investigación',change_from_previous:'Cambio frente a intentos anteriores',contrary_evidence:'Evidencia contraria',data_requests:'Datos pendientes'};
   const sources = (brief.sources || []).map(source => {
     let safe = false;
     try { const url = new URL(source.url); safe = ['https:','http:'].includes(url.protocol) && !url.username && !url.password; } catch {}
@@ -44,12 +44,14 @@ async function api(path, payload) {
 function setMode(value) {
   if (snapshot?.busy || starting) return;
   mode = value;
-  for (const option of ["demo","public"]) {
+  for (const option of ["demo","public","local"]) {
     $(option+"Mode").classList.toggle("selected",value===option);
     $(option+"Mode").setAttribute("aria-pressed",String(value===option));
   }
-  $("sourceDescription").innerHTML = value==="public" ? '<strong>Dukascopy + Coinbase · velas diarias</strong><span>Desde 2018 · descarga automática · sin Excel</span>' : '<strong>Demo offline · cinco series sintéticas</strong><span>Sin clave API · no puede aprobar estrategias reales</span>';
+  $("localDataPanel").classList.toggle("hidden",value!=="local");
+  $("sourceDescription").innerHTML = value==="local" ? '<strong>Datos del intermediario</strong><span>Temporalidad y direcciones según contrato</span>' : value==="public" ? '<strong>Dukascopy + Coinbase · velas diarias</strong><span>Desde 2018 · descarga automática · sin Excel</span>' : '<strong>Demo offline · cinco series sintéticas</strong><span>Sin clave API · no puede aprobar estrategias reales</span>';
 }
+$("localMode").onclick = () => setMode("local");
 $("demoMode").onclick = () => setMode("demo"); $("publicMode").onclick = () => setMode("public");
 $("settingsButton").onclick = () => $("settingsDialog").showModal();
 $("closeSettings").onclick = () => $("settingsDialog").close();
@@ -67,7 +69,7 @@ $("startButton").onclick = async () => {
   if (starting || snapshot?.busy) return;
   error(""); starting = true; $("startButton").disabled = true;
   try {
-    const payload = {mode,settings,asset_settings:assetSettings,model:$("modelInput").value.trim(),api_key:$("apiKeyInput").value.trim()};
+    const payload = {mode,settings,data_manifest:$("dataManifest").value.trim(),asset_settings:assetSettings,model:$("modelInput").value.trim(),api_key:$("apiKeyInput").value.trim()};
     await api("/api/start", payload);
     $("apiKeyInput").value = "";
     revision = -1;
@@ -141,7 +143,7 @@ function render(data) {
   const reports = s.reports || [];
   $("historyCount").textContent = s.report_count || reports.length;
   $("historyDescription").textContent = s.report_count > reports.length ? `Mostrando los últimos ${reports.length} reportes. Abre cualquier intento anterior por su número.` : "Cada hipótesis conserva sus resultados, incluso cuando se rechaza.";
-  $("historyRows").innerHTML = reports.length ? reports.map(r=>`<tr data-attempt="${r.attempt}" class="${selectedAttempt===r.attempt?'selected':''}"><td>#${String(r.attempt).padStart(2,"0")}</td><td class="strategy-cell">${escapeHtml(r.strategy_name)}<small> · ${escapeHtml(r.selected_asset || "")}</small></td><td class="${r.oos.net_return>0?'positive':r.oos.net_return<0?'negative':''}">${pct(r.oos.net_return)}</td><td>${pct(r.dsr)}</td><td><span class="result-badge ${r.outcome==='APPROVED'?'approved':''}">${r.outcome==='APPROVED'?'CANDIDATO':'RECHAZADO'}</span></td><td><button class="view-report" data-attempt="${r.attempt}">Ver reporte ↗</button></td></tr>`).join("") : '<tr><td colspan="6" class="table-empty">Todavía no hay pruebas. Los reportes aparecerán aquí automáticamente.</td></tr>';
+  $("historyRows").innerHTML = reports.length ? reports.map(r=>`<tr data-attempt="${r.attempt}" class="${selectedAttempt===r.attempt?'selected':''}"><td>#${String(r.attempt).padStart(2,"0")}</td><td class="strategy-cell">${escapeHtml(r.strategy_name)}<small> · ${escapeHtml(r.selected_asset || "")}</small></td><td class="${r.oos.net_return>0?'positive':r.oos.net_return<0?'negative':''}">${pct(r.oos.net_return)}</td><td>${pct(r.dsr)}</td><td><span class="result-badge ${r.outcome==='APPROVED'?'approved':''}">${r.outcome==='APPROVED'?'CANDIDATO':r.research_outcome==='NEEDS_CAPABILITY'?'CAPACIDAD PENDIENTE':'RECHAZADO'}</span></td><td><button class="view-report" data-attempt="${r.attempt}">Ver reporte ↗</button></td></tr>`).join("") : '<tr><td colspan="6" class="table-empty">Todavía no hay pruebas. Los reportes aparecerán aquí automáticamente.</td></tr>';
   $("historyRows").querySelectorAll("button").forEach(button=>button.onclick=()=>loadReport(Number(button.dataset.attempt),true));
   renderCharts(selectedReport?.charts || s.charts || {});
   const approved = reports.find(r=>r.outcome==="APPROVED");
@@ -247,12 +249,14 @@ const costLabels = {commission_rate:"Comisión/lado (%)",fixed_commission:"Comis
 $("assetCostForms").innerHTML = Object.entries(assetSettings).map(([asset,cfg])=>`<details class="asset-cost"><summary>${assetNames[asset]}</summary><div class="form-grid">${Object.entries(cfg).map(([key,value])=>`<label>${costLabels[key]}<input data-asset="${asset}" data-cost="${key}" type="number" min="${key==='quantity_step'?'0.00000001':'0'}" step="any" value="${key==='commission_rate'?value*100:value}" required></label>`).join('')}</div></details>`).join('');
 function renderAssets(context) {
   const rows=context.asset_results||{}, active=context.active_asset, selected=context.selected_asset;
-  $("assetProgress").textContent = active ? `Probando ${assetNames[active]||active} · ${context.asset_progress?.index||0}/5 · misma hipótesis` : selected ? `Activo destacado: ${assetNames[selected]||selected} · ${Object.keys(rows).length}/5 evaluados` : "Se prueban los cinco activos antes de cambiar de hipótesis";
-  $("assetRows").innerHTML=Object.entries(assetNames).map(([asset,name])=>{
+  const assets = Object.keys(snapshot?.data?.assets || {}).length ? Object.keys(snapshot.data.assets) : Object.keys(rows).length ? Object.keys(rows) : Object.keys(assetNames);
+  $("assetProgress").textContent = active ? `Probando ${assetNames[active]||active} · ${context.asset_progress?.index||0}/${assets.length} · misma hipótesis` : selected ? `Activo destacado: ${assetNames[selected]||selected} · ${Object.keys(rows).length}/${assets.length} evaluados` : "Se prueban los instrumentos disponibles antes de cambiar de hipótesis";
+  $("assetRows").innerHTML=assets.map(asset=>{
+    const name=assetNames[asset]||asset;
     const r=rows[asset], q=r?.quant_metrics||{}, o=q.out_of_sample||{}, stress=r?.stress_metrics||{}, passed=q.passed&&stress.passed&&!snapshot?.synthetic;
-    const label=active===asset?'EN PRUEBA':passed?'APROBADO':r?(o.net_return>0?'POSITIVO · REVISAR':'RECHAZADO'):'PENDIENTE';
+    const label=active===asset?'EN PRUEBA':passed?'APROBADO':r?(q.status==='NEEDS_CAPABILITY'?'CAPACIDAD PENDIENTE':o.net_return>0?'POSITIVO · REVISAR':'RECHAZADO'):'PENDIENTE';
     const scenario=stress.scenarios?.['1'];
     const reasons=[...(q.rejection_reasons||[]),...(stress.rejection_reasons||[])].join('; ');
-    return `<tr class="${selected===asset?'selected':''}"><td><b>${name}</b><br><small>${escapeHtml(r?.metadata?.source || (snapshot?.synthetic?'Demo sintética':asset==='BTCUSD'?'Coinbase':'Dukascopy'))}${r?.metadata?.bars?` · ${r.metadata.bars} barras`:''}</small></td><td class="${o.net_return>0?'positive':o.net_return<0?'negative':''}">${pct(o.net_return)}</td><td>${num(o.sharpe)}</td><td>${pct(o.max_drawdown)}</td><td>${scenario?money(scenario.final_equity):'Sin evaluar'}</td><td><span class="result-badge ${passed?'approved':''}">${label}</span>${reasons?`<details><summary>Ver motivos</summary><small>${escapeHtml(reasons)}</small></details>`:''}</td></tr>`;
+    return `<tr class="${selected===asset?'selected':''}"><td><b>${escapeHtml(name)}</b><br><small>${escapeHtml(r?.metadata?.source || (snapshot?.synthetic?'Demo sintética':asset==='BTCUSD'?'Coinbase':'Dukascopy'))}${r?.metadata?.bars?` · ${r.metadata.bars} barras`:''}</small></td><td class="${o.net_return>0?'positive':o.net_return<0?'negative':''}">${pct(o.net_return)}</td><td>${num(o.sharpe)}</td><td>${pct(o.max_drawdown)}</td><td>${scenario?money(scenario.final_equity):'Sin evaluar'}</td><td><span class="result-badge ${passed?'approved':''}">${label}</span>${reasons?`<details><summary>Ver motivos</summary><small>${escapeHtml(reasons)}</small></details>`:''}</td></tr>`;
   }).join('');
 }

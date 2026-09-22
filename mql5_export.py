@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from strategy_rules import inspect_expression, program_requirements, program_signals
+from execution import TIMEFRAMES, signal_frame
 
 
 def executable_program(h):
@@ -117,6 +118,8 @@ def generate_source(h, asset, start, feature_file, signature):
         args = (node["args"] + [-1] * 3)[:3]
         setup.append(f"   SetNode({index},{mql_string(node['op'])},{args[0]},{args[1]},{args[2]},{node['value']:.17g},{mql_string(node['field'])});")
     replacements = {
+        "@@TIMEFRAME@@": {"1m": "PERIOD_M1", "5m": "PERIOD_M5", "15m": "PERIOD_M15", "30m": "PERIOD_M30", "1h": "PERIOD_H1", "4h": "PERIOD_H4", "1d": "PERIOD_D1"}[h.get("timeframe", "1d")],
+        "@@DIRECTION@@": "-1" if h.get("direction") == "short" else "1",
         "@@SYMBOL@@": mql_string(asset), "@@START@@": str(int(start.timestamp())),
         "@@NODES@@": str(len(nodes)), "@@SETUP@@": "\n".join(setup),
         "@@ENTRY@@": str(roots[0]), "@@EXIT@@": str(roots[1]),
@@ -127,6 +130,7 @@ def generate_source(h, asset, start, feature_file, signature):
         "@@TAKE@@": repr(float(h["take_profit"])), "@@HOLDING@@": str(h["max_holding"]),
         "@@MAGIC@@": str(100000 + int(signature[:8], 16) % 2000000000),
         "@@SIGNATURE@@": signature,
+        "@@SHORT_SIGNATURE@@": signature[:12],
         "@@SPAN3_GAP@@": "true" if ema_span3_gap_correction() else "false",
     }
     source = Path(__file__).with_name("mql5_runtime.mq5.tmpl").read_text(encoding="utf-8")
@@ -142,6 +146,12 @@ def export_mql5(h, asset, data, folder, signature, settings, checkpoint=lambda: 
     if not re.fullmatch(r"[A-Za-z0-9_]+", asset):
         raise ValueError("Activo inválido para exportar MQL5")
     checkpoint()
+    if settings.get("execution_delay_bars", 0):
+        raise ValueError("Exportación requiere paridad de latencia: execution_delay_bars no implementado en EA")
+    if h.get("direction") == "short" and (asset == "BTCUSD" or not settings.get("allow_short", False)):
+        raise ValueError("Short no disponible para el contrato validado")
+    execution_data = data
+    data = signal_frame(data, h.get("timeframe", "1d"))
     feature_name = f"quantlab_{signature[:12]}_features.csv"
     source, program, extras, legacy = generate_source(h, asset, data.timestamp.iloc[0], feature_name, signature)
     source = source.replace("input double StrategyCapitalUSD=100.0;", f"input double StrategyCapitalUSD={float(settings.get('capital', 10000)):.8f};")
@@ -162,11 +172,20 @@ def export_mql5(h, asset, data, folder, signature, settings, checkpoint=lambda: 
         path = folder / feature_name
         features.to_csv(path, sep=";", index=False, na_rep="", float_format="%.17g")
         files.append(path)
-    reference = data[["timestamp"]].copy()
-    reference["entry"] = entry.astype(int)
-    reference["exit"] = exit_signal.astype(int)
+    _, warmup = program_requirements(program)
+    reference = data[["timestamp"]].iloc[warmup+1:-1].copy()
+    reference["entry"] = entry[warmup+1:-1].astype(int)
+    reference["exit"] = exit_signal[warmup+1:-1].astype(int)
+    reference["direction"] = -1 if h.get("direction") == "short" else 1
     reference.to_csv(folder / "reference_signals.csv", index=False)
     files.append(folder / "reference_signals.csv")
+    from trading_agent import backtest, Settings
+    if len(data) <= warmup+2:
+        raise ValueError("Historia insuficiente para referencia MT5 después del calentamiento")
+    parity_start = int(execution_data.timestamp.searchsorted(data.timestamp.iloc[warmup+2]))
+    simulation = backtest(execution_data, h, Settings(**settings), float(settings.get("capital", 10000)), parity_start)
+    pd.DataFrame(simulation["trade_log"], columns=["entry_timestamp", "exit_timestamp", "direction", "quantity", "entry_price", "exit_price", "pnl", "holding_bars", "exit_at_close"]).to_csv(folder / "reference_trades.csv", index=False)
+    files.append(folder / "reference_trades.csv")
     manifest = {"format": "mql5-ea", "version": 1, "asset": asset, "hypothesis_signature": signature,
                 "pandas_version": pd.__version__, "ema_span3_gap_correction": ema_span3_gap_correction(),
                 "hypothesis": h, "executable_program": program, "legacy_exit_complement": legacy,
@@ -177,6 +196,10 @@ def export_mql5(h, asset, data, folder, signature, settings, checkpoint=lambda: 
                 "source_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
                 "compilation": "PENDING_METAEDITOR", "mt5_parity": "PENDING_STRATEGY_TESTER",
                 "independent_validation": "PENDING", "live_trading_default": False,
+                "signal_timeframe": h.get("timeframe", "1d"), "direction": h.get("direction", "long"),
+                "parity_replay_start": str(execution_data.timestamp.iloc[parity_start]),
+                "parity_reference_scope": "Full historical replay after EA warmup; not the holdout equity curve",
+                "shadow_file": "quantlab_shadow_" + signature[:12] + ".csv",
                 "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}
     (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     files.append(folder / "manifest.json")
@@ -187,7 +210,7 @@ La aprobación corresponde al simulador Python. Compilación MQL5, paridad en MT
 validación con datos independientes están PENDIENTES, no certificadas.
 
 1. Copiar strategy.mq5 a MQL5/Experts y compilar en MetaEditor (F7).
-2. Probar en Strategy Tester sobre D1. BrokerSymbol debe representar {asset} con
+2. Probar en Strategy Tester sobre {h.get("timeframe", "1d")}. BrokerSymbol debe representar {asset} con
    cotización USD y la misma orientación. CADUSD NO equivale a comprar USDCAD.
 3. EnableTrading=false deja el EA en modo señales. Habilitarlo sólo al querer
    ejecutar órdenes en Tester/demo/terminal. La generación no conecta a un bróker.
@@ -202,7 +225,7 @@ validación con datos independientes están PENDIENTES, no certificadas.
 6. EmitSignalLog escribe fechas UTC y señales en el diario para contrastarlas con
    reference_signals.csv usando exactamente las mismas velas y datos auxiliares.
 
-Se evalúan velas cerradas y se actúa al primer tick de la nueva vela D1. Al adjuntar
+Se evalúan velas cerradas y se actúa al primer tick de la nueva vela de señal. Al adjuntar
 el EA se espera la siguiente vela, sin recuperar entradas antiguas. Las entradas
 tardías se omiten. Stop/objetivo se evalúan al cierre, no como órdenes intrabar.
 Se conserva una posición larga por símbolo/magic; posiciones ajenas y órdenes pendientes bloquean acciones.

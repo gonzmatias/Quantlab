@@ -15,6 +15,8 @@ input int BrokerUtcOffsetMinutes=0;
 input datetime HistoryStart=(datetime)@@START@@;
 input string FeatureFile=@@FEATURE_FILE@@;
 
+const ENUM_TIMEFRAMES SignalTimeframe=@@TIMEFRAME@@;
+const int Direction=@@DIRECTION@@;
 const double Allocation=@@ALLOCATION@@;
 const double StopFraction=@@STOP@@;
 const double TakeFraction=@@TAKE@@;
@@ -244,9 +246,9 @@ void EvaluateNode(int id,int count) {
 bool EvaluateSignals(bool &entry,bool &exit_signal) {
    entry=false; exit_signal=false;
    ArraySetAsSeries(bars,false);
-   int count=CopyRates(BrokerSymbol,PERIOD_D1,HistoryStart+BrokerUtcOffsetMinutes*60,TimeCurrent(),bars);
-   if(count<Warmup+3) { Print("Insufficient D1 history"); return false; }
-   if(bars[count-1].time!=iTime(BrokerSymbol,PERIOD_D1,0)) return false;
+   int count=CopyRates(BrokerSymbol,SignalTimeframe,HistoryStart+BrokerUtcOffsetMinutes*60,TimeCurrent(),bars);
+   if(count<Warmup+3) { Print("Insufficient signal history"); return false; }
+   if(bars[count-1].time!=iTime(BrokerSymbol,SignalTimeframe,0)) return false;
    if(UtcTime(bars[0].time)!=HistoryStart) { Print("Historical start mismatch; refusing changed EMA initialization"); return false; }
    if(!LoadFeatures(count)) return false;
    int closed=count-2;
@@ -271,7 +273,7 @@ bool ManagedPosition(ulong &ticket) {
    for(int i=PositionsTotal()-1;i>=0;i--) {
       ulong selected=PositionGetTicket(i);
       if(selected==0 || PositionGetString(POSITION_SYMBOL)!=BrokerSymbol) continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber || ticket!=0 || PositionGetInteger(POSITION_TYPE)!=POSITION_TYPE_BUY) {
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber || ticket!=0 || PositionGetInteger(POSITION_TYPE)!=(Direction>0 ? POSITION_TYPE_BUY : POSITION_TYPE_SELL)) {
          Print("Foreign or ambiguous position on strategy symbol; no action"); return false;
       }
       ticket=selected;
@@ -299,13 +301,25 @@ double PositionLots(double ask) {
    lots=NormalizeDouble(MathMin(maximum,lots),8);
    if(lots<minimum || lots*contract*ask>available*Allocation+0.000001) return 0;
    double margin=0;
-   if(!OrderCalcMargin(ORDER_TYPE_BUY,BrokerSymbol,lots,ask,margin) || margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)) return 0;
+   if(!OrderCalcMargin(Direction>0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,BrokerSymbol,lots,ask,margin) || margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)) return 0;
    return lots;
+}
+
+// Observed quotes and signals only. No assertion of a fill for an unsent order.
+void WriteShadow(datetime current,bool entry,bool exit_signal) {
+   MqlTick observed;
+   if(!SymbolInfoTick(BrokerSymbol,observed)) return;
+   int file=FileOpen("quantlab_shadow_@@SHORT_SIGNATURE@@.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON,';');
+   if(file==INVALID_HANDLE) { Print("Shadow log unavailable"); return; }
+   if(FileSize(file)==0) FileWrite(file,"timestamp","signal_timestamp","entry","exit","direction","bid","ask","trading_enabled");
+   FileSeek(file,0,SEEK_END);
+   FileWrite(file,(long)UtcTime(observed.time),(long)UtcTime(iTime(BrokerSymbol,SignalTimeframe,1)),(int)entry,(int)exit_signal,Direction,observed.bid,observed.ask,(int)EnableTrading);
+   FileFlush(file); FileClose(file);
 }
 
 int OnInit() {
    if(BrokerSymbol=="" || !SymbolSelect(BrokerSymbol,true)) return INIT_PARAMETERS_INCORRECT;
-   if(_Symbol!=BrokerSymbol || _Period!=PERIOD_D1) { Print("Attach EA to BrokerSymbol D1 chart"); return INIT_PARAMETERS_INCORRECT; }
+   if(_Symbol!=BrokerSymbol || _Period!=SignalTimeframe) { Print("Attach EA to BrokerSymbol signal timeframe chart"); return INIT_PARAMETERS_INCORRECT; }
    if(StrategyCapitalUSD<=0 || MaxEntryDelaySeconds<0) return INIT_PARAMETERS_INCORRECT;
    if(AccountInfoString(ACCOUNT_CURRENCY)!="USD" || SymbolInfoString(BrokerSymbol,SYMBOL_CURRENCY_PROFIT)!="USD") {
       Print("Sizing requires USD account and USD quote currency"); return INIT_PARAMETERS_INCORRECT;
@@ -319,13 +333,13 @@ int OnInit() {
    trade.SetAsyncMode(false);
    if(!trade.SetTypeFillingBySymbol(BrokerSymbol)) return INIT_FAILED;
    BuildNodes();
-   last_bar=iTime(BrokerSymbol,PERIOD_D1,0); // No retroactive entry on attachment.
+   last_bar=iTime(BrokerSymbol,SignalTimeframe,0); // No retroactive entry on attachment.
    await_first_bar=(last_bar==0);
    return INIT_SUCCEEDED;
 }
 
 void OnTick() {
-   datetime current=iTime(BrokerSymbol,PERIOD_D1,0);
+   datetime current=iTime(BrokerSymbol,SignalTimeframe,0);
    if(current==0 || current==last_bar) return;
    if(await_first_bar) { last_bar=current; await_first_bar=false; return; }
    if(TimeCurrent()==last_evaluation) return;
@@ -333,14 +347,15 @@ void OnTick() {
    bool entry=false,exit_signal=false;
    bool ready=EvaluateSignals(entry,exit_signal);
    last_bar=ready ? current : 0; // Retry unavailable data without late entries.
+   if(ready) WriteShadow(current,entry,exit_signal);
    if(!EnableTrading) return;
    ulong ticket=0;
    if(!ManagedPosition(ticket)) return;
    if(ticket!=0) {
-      double previous=iClose(BrokerSymbol,PERIOD_D1,1);
+      double previous=iClose(BrokerSymbol,SignalTimeframe,1);
       double price=PositionGetDouble(POSITION_PRICE_OPEN);
-      int age=iBarShift(BrokerSymbol,PERIOD_D1,(datetime)PositionGetInteger(POSITION_TIME),false);
-      bool protective=previous>0 && (previous<=price*(1-StopFraction) || previous>=price*(1+TakeFraction));
+      int age=iBarShift(BrokerSymbol,SignalTimeframe,(datetime)PositionGetInteger(POSITION_TIME),false);
+      bool protective=previous>0 && (Direction*(previous/price-1)<=-StopFraction || Direction*(previous/price-1)>=TakeFraction);
       if((ready && exit_signal) || protective || age>=MaxHolding) {
          bool sent=trade.PositionClose(ticket,MaxDeviationPoints);
          uint code=trade.ResultRetcode();
@@ -354,11 +369,11 @@ void OnTick() {
    if(!ready || !entry || exit_signal || TimeCurrent()-current>MaxEntryDelaySeconds) return;
    MqlTick tick;
    if(!SymbolInfoTick(BrokerSymbol,tick)) return;
-   double lots=PositionLots(tick.ask);
+   double lots=PositionLots(Direction>0 ? tick.ask : tick.bid);
    if(lots<=0) { Print("Insufficient cash for broker minimum without leverage"); return; }
-   // No broker SL/TP: the tested rules detect stops at daily close.
-   bool sent=trade.Buy(lots,BrokerSymbol,0.0,0.0,0.0,"QuantLab");
+   // No broker SL/TP: the tested rules detect stops at signal close.
+   bool sent=Direction>0 ? trade.Buy(lots,BrokerSymbol,0.0,0.0,0.0,"QuantLab") : trade.Sell(lots,BrokerSymbol,0.0,0.0,0.0,"QuantLab");
    uint code=trade.ResultRetcode();
    if(!sent || (code!=TRADE_RETCODE_DONE && code!=TRADE_RETCODE_DONE_PARTIAL))
-      Print("Buy not executed: ",code," ",trade.ResultRetcodeDescription());
+      Print("Entry not executed: ",code," ",trade.ResultRetcodeDescription());
 }

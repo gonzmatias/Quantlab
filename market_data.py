@@ -144,3 +144,54 @@ def load_public_data(cache: Path, checkpoint=lambda: None, progress=lambda messa
         datasets[asset] = validate_data(frame[(frame.timestamp >= common_start) & (frame.timestamp <= common_end)])
         metadata[asset].update(comparison_start=str(common_start), comparison_end=str(common_end))
     return datasets, metadata
+
+
+def load_market_manifest(path):
+    """Load broker/exported OHLC(+bid/ask) CSVs without inventing finer prices.
+
+    Timestamps are UTC bar OPEN times. Metadata declares the contract, resolution,
+    quote convention and calibrated settings. This is not a tick certification.
+    """
+    import re
+    from trading_agent import validate_data, Settings
+    from execution import bar_seconds, TIMEFRAMES
+    path = Path(path).resolve()
+    document = json.loads(path.read_text(encoding="utf-8"))
+    datasets, metadata, profiles = {}, {}, {}
+    for spec in document["datasets"]:
+        asset = spec["asset"]
+        if not re.fullmatch(r"[A-Za-z0-9_]+", asset) or asset in datasets:
+            raise ValueError("Identificador de instrumento inválido o repetido")
+        if spec.get("quote_currency") != "USD" or not spec.get("source") or not spec.get("contract"):
+            raise ValueError("Cada dataset requiere fuente, contrato y quote_currency=USD")
+        if spec.get("instrument_type") not in ("spot", "fx", "cfd"):
+            raise ValueError("Contrato no implementado: se admiten spot, fx y CFD; futuros/funding requieren modelo propio")
+        csv_path = (path.parent / spec["file"]).resolve()
+        raw = csv_path.read_bytes()
+        frame = validate_data(pd.read_csv(csv_path))
+        seconds = TIMEFRAMES.get(spec.get("timeframe"))
+        if seconds != bar_seconds(frame):
+            raise ValueError("La frecuencia declarada no coincide con las barras")
+        if (frame.timestamp.map(lambda t: t.value) // 10**9 % seconds != 0).any():
+            raise ValueError("Las barras deben estar alineadas a la grilla UTC declarada")
+        if (frame.timestamp.diff().dropna().dt.total_seconds() % seconds != 0).any():
+            raise ValueError("Intervalos de barras inconsistentes")
+        if frame.timestamp.iloc[-1] + pd.Timedelta(seconds=seconds) > pd.Timestamp.now(tz="UTC"):
+            raise ValueError("El dataset incluye barras incompletas o futuras")
+        profile = spec.get("settings", {})
+        required = {"bars_per_year", "quote_side", "commission_rate", "spread_bps", "slippage_bps", "quantity_step", "min_notional", "holding_cost_bps", "allow_short"}
+        if not required.issubset(profile):
+            raise ValueError("El contrato debe declarar costos, frecuencia anual, mínimos, financiación, quote_side y allow_short")
+        allowed = required | {"fixed_commission", "execution_delay_bars"}
+        if set(profile)-allowed:
+            raise ValueError("El manifiesto no puede cambiar los filtros de validación")
+        Settings(**profile)
+        if spec["instrument_type"] == "spot" and profile["allow_short"]:
+            raise ValueError("Spot sin préstamo no admite short")
+        datasets[asset], profiles[asset] = frame, profile
+        metadata[asset] = {**spec, "sha256": hashlib.sha256(raw).hexdigest(), "snapshot_file": str(csv_path),
+                           "bars": len(frame), "start": str(frame.timestamp.iloc[0]), "end": str(frame.timestamp.iloc[-1]),
+                           "execution_verified": False, "explicit_contract": True}
+    if not datasets:
+        raise ValueError("El manifiesto no contiene datasets")
+    return datasets, metadata, profiles

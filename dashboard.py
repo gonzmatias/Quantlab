@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 
 from trading_agent import Settings, TradingAgent, RunCancelled, demo_data, initial_state, validate_data, market_settings
-from market_data import ASSETS, load_public_data
+from market_data import ASSETS, load_public_data, load_market_manifest
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 16 * 1024 * 1024
@@ -54,12 +54,12 @@ class JobManager:
 
     def start(self, payload: dict):
         mode = payload.get("mode", "public")
-        if mode not in ("demo", "public"):
+        if mode not in ("demo", "public", "local"):
             raise ValueError("Selecciona demo o datos públicos")
         cfg = Settings(**payload.get("settings", {}))
         model = str(payload.get("model", "")).strip() or os.getenv("OPENAI_MODEL")
         key = str(payload.get("api_key", "")).strip() or None
-        if mode == "public" and not ((key or os.getenv("OPENAI_API_KEY")) and model):
+        if mode != "demo" and not ((key or os.getenv("OPENAI_API_KEY")) and model):
             raise ValueError("Indica el modelo de IA y la clave API en Configuración; los precios públicos no requieren clave")
         profiles = payload.get("asset_settings", {})
         if not isinstance(profiles, dict) or set(profiles) - set(ASSETS):
@@ -70,6 +70,12 @@ class JobManager:
             if self.busy:
                 raise RuntimeError("Ya hay una búsqueda activa")
         data = {a: demo_data(cfg.seed+i) for i, a in enumerate(ASSETS)} if mode == "demo" else None
+        local_metadata = None
+        if mode == "local":
+            manifest = payload.get("data_manifest", "")
+            if not manifest:
+                raise ValueError("Indica un manifiesto local de datos")
+            data, local_metadata, profiles = load_market_manifest(manifest)
         with self.lock:
             if self.busy:
                 raise RuntimeError("Ya hay una búsqueda activa")
@@ -81,12 +87,12 @@ class JobManager:
             self.stop.clear()
             self.busy = True
             self.revision += 1
-            self.thread = threading.Thread(target=self._work, args=(data, cfg, self.output, model, self.synthetic, key, profiles), daemon=True)
+            self.thread = threading.Thread(target=self._work, args=(data, cfg, self.output, model, self.synthetic, key, profiles, local_metadata), daemon=True)
             self.thread.start()
 
-    def _work(self, data, cfg, output, model, synthetic, key, profiles=None):
+    def _work(self, data, cfg, output, model, synthetic, key, profiles=None, local_metadata=None):
         try:
-            metadata = {}
+            metadata = local_metadata or {}
             def checkpoint():
                 if self.stop.is_set():
                     raise RunCancelled()
@@ -99,7 +105,7 @@ class JobManager:
                 data, metadata = load_public_data(self.output_root / "market_cache", checkpoint, progress)
             checkpoint()
             with self.lock:
-                self.data_info = {"name": "Demo sintética" if synthetic else "Dukascopy + Coinbase · diario", "assets": metadata}
+                self.data_info = {"name": "Demo sintética" if synthetic else "Contrato local" if local_metadata else "Dukascopy + Coinbase · diario", "assets": metadata}
             agent = TradingAgent(data, cfg, output, model, synthetic, on_event=self.update,
                                  stop_requested=self.stop.is_set, api_key=key, market_metadata=metadata, asset_settings=profiles)
             agent.run()
@@ -129,6 +135,7 @@ class JobManager:
                 state.pop(field, None)
             state["reports"] = [{"attempt": r["attempt"], "strategy_name": r["strategy_name"],
                                  "outcome": r["outcome"], "reasons": r["rejection_reasons"],
+                                 "research_outcome": r.get("research_outcome"),
                                  "selected_asset": r.get("selected_asset", ""),
                                  "oos": r["quant_metrics"].get("out_of_sample", {}),
                                  "dsr": r["quant_metrics"].get("dsr")} for r in state["reports"]]
