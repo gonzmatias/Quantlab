@@ -56,7 +56,19 @@ class JobManager:
         mode = payload.get("mode", "public")
         if mode not in ("demo", "public", "local"):
             raise ValueError("Selecciona demo o datos públicos")
-        cfg = Settings(**payload.get("settings", {}))
+        run_mode = payload.get("run_mode", "search")
+        if run_mode not in ("search", "single"):
+            raise ValueError("Selecciona investigación o test único")
+        hypothesis = payload.get("hypothesis", "") if run_mode == "single" else None
+        if run_mode == "single":
+            if not isinstance(hypothesis, str) or not 20 <= len(hypothesis.strip()) <= 20000:
+                raise ValueError("Describe la hipótesis con entre 20 y 20000 caracteres")
+            if mode == "demo":
+                raise ValueError("El test único requiere datos públicos o del intermediario y un modelo de IA")
+        settings = dict(payload.get("settings", {}))
+        if run_mode == "single":
+            settings["max_iterations"] = 1
+        cfg = Settings(**settings)
         model = str(payload.get("model", "")).strip() or os.getenv("OPENAI_MODEL")
         key = str(payload.get("api_key", "")).strip() or None
         if mode != "demo" and not ((key or os.getenv("OPENAI_API_KEY")) and model):
@@ -87,10 +99,10 @@ class JobManager:
             self.stop.clear()
             self.busy = True
             self.revision += 1
-            self.thread = threading.Thread(target=self._work, args=(data, cfg, self.output, model, self.synthetic, key, profiles, local_metadata), daemon=True)
+            self.thread = threading.Thread(target=self._work, args=(data, cfg, self.output, model, self.synthetic, key, profiles, local_metadata, hypothesis), daemon=True)
             self.thread.start()
 
-    def _work(self, data, cfg, output, model, synthetic, key, profiles=None, local_metadata=None):
+    def _work(self, data, cfg, output, model, synthetic, key, profiles=None, local_metadata=None, hypothesis=None):
         try:
             metadata = local_metadata or {}
             def checkpoint():
@@ -107,7 +119,8 @@ class JobManager:
             with self.lock:
                 self.data_info = {"name": "Demo sintética" if synthetic else "Contrato local" if local_metadata else "Dukascopy + Coinbase · diario", "assets": metadata}
             agent = TradingAgent(data, cfg, output, model, synthetic, on_event=self.update,
-                                 stop_requested=self.stop.is_set, api_key=key, market_metadata=metadata, asset_settings=profiles)
+                                 stop_requested=self.stop.is_set, api_key=key, market_metadata=metadata, asset_settings=profiles,
+                                 natural_hypothesis=hypothesis)
             agent.run()
         except RunCancelled:
             with self.lock:

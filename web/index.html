@@ -18,6 +18,16 @@
 <main id="overview">
   <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Investigación cuantitativa</strong></span><span class="local-pill">◉ LOCAL</span></header>
   <div class="page-heading"><div><div class="eyebrow">DE LA HIPÓTESIS A LA EVIDENCIA</div><h1>Laboratorio de estrategias<span>.</span></h1><p>Observa cada prueba. Entiende cada resultado.</p></div><button id="settingsButton" class="button secondary">⚙ Configurar pruebas</button></div>
+  <section class="panel" aria-label="Tipo de prueba">
+    <label for="runMode">Tipo de prueba</label>
+    <select id="runMode"><option value="search">Investigación automática</option><option value="single">Test único · mi hipótesis</option></select>
+    <div id="hypothesisPanel" class="hidden">
+      <label for="hypothesisInput">Describe la estrategia que quieres probar</label>
+      <textarea id="hypothesisInput" rows="6" maxlength="20000" style="width:100%;box-sizing:border-box" placeholder="Ejemplo: En EURUSD diario, solo compras. Entrar cuando la media simple de 20 cierres cruce por encima de la de 50; salir con el cruce inverso. Asignar 20% del capital, stop de 2%, objetivo de 4% y máximo 30 barras. Evaluar señales, stop y objetivo al cierre y ejecutar al siguiente open."></textarea>
+      <p>Un solo intento, sin cambiar tu idea ni buscar reemplazos. Indica activo, temporalidad, dirección, entrada, salida, asignación, stop, objetivo y duración máxima. Si falta algo esencial, el reporte te dirá qué precisar.</p>
+      <p>Requiere modelo y clave API. La interpretación quedará en el reporte. Si supera las pruebas previas, consumirá la reserva final de un solo uso, pase o falle.</p>
+    </div>
+  </section>
   <section class="launch-panel" aria-label="Configurar e iniciar búsqueda">
     <div class="launch-source"><label class="tiny-label">FUENTE DE DATOS</label><div class="segmented"><button id="publicMode" class="selected" aria-pressed="true">Mercados públicos</button><button id="localMode" aria-pressed="false">Datos del intermediario</button><button id="demoMode" aria-pressed="false">Demo sintética</button></div></div>
 <div class="source-description" id="sourceDescription"><strong>Dukascopy + Coinbase · velas diarias</strong><span>Desde 2018 · descarga automática · sin Excel</span></div>

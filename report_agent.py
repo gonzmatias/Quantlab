@@ -252,8 +252,9 @@ def research_html(report):
     esc = lambda value: html.escape(str(value))
     research = report.get("research", {})
     brief = research.get("brief", {})
+    original = ("<h2>Tu hipótesis original</h2><p style='white-space:pre-wrap'>" + esc(research.get("original_hypothesis", "")) + "</p>") if research.get("mode") == "manual" else ""
     if not brief:
-        return "<h2>Investigación</h2><p>" + esc(research.get("summary", research.get("rejection_reason", "Sin ficha de investigación."))) + "</p>"
+        return original + "<h2>Investigación</h2><p>" + esc(research.get("summary", research.get("rejection_reason", "Sin ficha de investigación."))) + "</p>"
     labels = {"mechanism": "Mecanismo", "prediction": "Predicción", "falsification": "Criterio de descarte",
               "origin": "Origen", "assumptions": "Supuestos", "rule_mapping": "Correspondencia mecanismo-reglas",
               "execution_requirements": "Requisitos de ejecución",
@@ -261,7 +262,7 @@ def research_html(report):
               "compatibility_reason": "Compatibilidad", "research_approach": "Enfoque de investigación",
               "change_from_previous": "Cambio frente a intentos anteriores", "contrary_evidence": "Evidencia contraria",
               "data_requests": "Datos pendientes", "data_acquisition": "Fuentes de datos solicitadas"}
-    parts = ["<h2>Investigación y fuentes</h2>"]
+    parts = [original, "<h2>Investigación y fuentes</h2>"]
     parts += [f"<p><b>{label}:</b> {esc(brief.get(key, ''))}</p>" for key, label in labels.items()]
     for source in brief.get("sources", []):
         url = source.get("url", "")

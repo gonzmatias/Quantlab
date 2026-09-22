@@ -33,6 +33,12 @@ function renderResearch(report) {
   const comparison = report.quant_metrics?.baseline_comparison;
   return `<h4 class="report-section-title">Investigación y fuentes</h4>${Object.entries(labels).map(([key,label])=>`<p><strong>${label}:</strong> ${escapeHtml(brief[key])}</p>`).join('')}<ul>${sources}</ul><p>Una URL trazable no verifica la afirmación publicada. Los filtros del simulador no certifican el mecanismo.</p>${comparison ? `<p>Comparación con la referencia en entrenamiento: diferencia de retorno ${pct(comparison.net_return_difference)}; diferencia de Sharpe ${num(comparison.sharpe_difference)}. Diagnóstico, no criterio de aprobación.</p>` : ''}`;
 }
+$("runMode").onchange = () => {
+  const single = $("runMode").value === "single";
+  $("hypothesisPanel").classList.toggle("hidden", !single);
+  $("startButton").textContent = single ? "▶ Probar mi hipótesis" : "▶ Iniciar investigación";
+  if (single && mode === "demo") setMode("public");
+};
 function error(message) { $("formError").textContent = message; $("formError").classList.toggle("hidden", !message); }
 async function api(path, payload) {
   const options = payload === undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json","X-Session-Token":token},body:JSON.stringify(payload)};
@@ -69,7 +75,7 @@ $("startButton").onclick = async () => {
   if (starting || snapshot?.busy) return;
   error(""); starting = true; $("startButton").disabled = true;
   try {
-    const payload = {mode,settings,data_manifest:$("dataManifest").value.trim(),asset_settings:assetSettings,model:$("modelInput").value.trim(),api_key:$("apiKeyInput").value.trim()};
+    const payload = {mode,settings,run_mode:$("runMode").value,hypothesis:$("hypothesisInput").value.trim(),data_manifest:$("dataManifest").value.trim(),asset_settings:assetSettings,model:$("modelInput").value.trim(),api_key:$("apiKeyInput").value.trim()};
     await api("/api/start", payload);
     $("apiKeyInput").value = "";
     revision = -1;
@@ -112,7 +118,7 @@ function render(data) {
   }
   const labels = {IDLE:"LISTO PARA INICIAR",STARTING:"PREPARANDO DATOS",RUNNING:"INVESTIGACIÓN EN CURSO",COMPLETED:"CANDIDATO HISTÓRICO · PRUEBA FUTURA PENDIENTE",EXHAUSTED:"BÚSQUEDA FINALIZADA · SIN APROBACIÓN",CANCELLED:"DETENIDO POR EL USUARIO",ERROR:"ERROR DE EJECUCIÓN"};
   let label = labels[lifecycle] || "EN ESPERA";
-  if (busy && s.status === "REJECTED") label = "INTENTO RECHAZADO · PREPARANDO ITERACIÓN";
+  if (busy && s.status === "REJECTED") label = data.max_iterations === 1 ? "FINALIZANDO TEST ÚNICO" : "INTENTO RECHAZADO · PREPARANDO ITERACIÓN";
   if (busy && data.stop_requested) label = "DETENIENDO INVESTIGACIÓN";
   $("statusBadge").textContent = label;
   $("statusBadge").className = "status-badge " + (lifecycle==="ERROR"?"error":lifecycle==="COMPLETED"?"success":busy?"running":lifecycle==="EXHAUSTED"?"rejected":"");
@@ -126,9 +132,9 @@ function render(data) {
   if (busy && data.stop_requested) description = "Cancelando el cálculo o la espera del modelo y conservando los reportes completados.";
   $("stageDescription").textContent = description;
   document.querySelector(".status-panel").classList.toggle("working",busy);
-  $("startButton").disabled = busy || starting; $("startButton").textContent = busy ? "Investigando…" : s.iteration_count ? "↻ Nueva investigación" : "▶ Iniciar investigación";
+  $("startButton").disabled = busy || starting; $("startButton").textContent = busy ? "Evaluando…" : $("runMode").value === "single" ? "▶ Probar mi hipótesis" : s.iteration_count ? "↻ Nueva investigación" : "▶ Iniciar investigación";
   $("stopButton").classList.toggle("hidden",!busy); $("stopButton").disabled = data.stop_requested;
-  for (const id of ["settingsButton","demoMode","publicMode"]) $(id).disabled = busy;
+  for (const id of ["settingsButton","demoMode","publicMode","localMode","runMode","hypothesisInput"]) $(id).disabled = busy || starting;
   $("liveLabel").textContent = busy ? "● EN VIVO" : "EN ESPERA"; $("liveLabel").classList.toggle("active",busy);
   document.querySelectorAll(".pipeline > div").forEach((element) => {
     const name = element.dataset.stage;
@@ -219,6 +225,9 @@ async function loadReport(attempt, scroll) {
     const assessment = report.assessment || {};
     $("reportContent").insertAdjacentHTML("afterbegin", `<p><strong>Rentabilidad histórica:</strong> ${escapeHtml(assessment.historical_profitability || 'NO EVALUADA')} · <strong>Robustez:</strong> ${escapeHtml(assessment.robustness || 'NO EVALUADA')} · <strong>Datos nuevos:</strong> ${escapeHtml(assessment.independent_validation || 'PENDIENTE')}</p>`);
     $("reportContent").insertAdjacentHTML("beforeend", renderResearch(report));
+    if (report.research?.mode === "manual") {
+      $("reportContent").insertAdjacentHTML("afterbegin", `<h4>Tu hipótesis original</h4><p style="white-space:pre-wrap">${escapeHtml(report.research.original_hypothesis)}</p>${report.research.missing_details?.length ? `<h4>Detalles que debes precisar</h4><ul>${report.research.missing_details.map(detail=>`<li>${escapeHtml(detail)}</li>`).join('')}</ul>` : ''}`);
+    }
     $("reportContent").insertAdjacentHTML("beforeend", `<details class="asset-cost"><summary>Detalle de regresión, walk-forward y robustez del activo destacado</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify({quant:report.quant_metrics?.advanced_tests || {},stress:report.stress_metrics?.robustness_tests || {}},null,2))}</pre></details>`);
     $("reportContent").insertAdjacentHTML("beforeend", `<h4 class="report-section-title">Resultados completos de los cinco activos</h4><p>OOS positivo: ${escapeHtml((report.positive_assets||[]).join(', ')||'ninguno')}. Activo destacado: ${escapeHtml(report.selected_asset||'—')}.</p>${Object.entries(report.asset_results||{}).map(([asset,row])=>`<details class="asset-cost"><summary>${escapeHtml(asset)} · métricas, fuente y costos</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify(row,null,2))}</pre></details>`).join('')}`);
     chartKey="oos"; renderCharts(report.charts);

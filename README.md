@@ -442,3 +442,13 @@ Antes de actualizar un experimento antiguo, conservar su código y entorno. Los 
 nuevos congelan hashes del motor: una revisión posterior no puede evaluarlos silenciosamente.
 La migración SQLite a versión 2 conserva tablas anteriores e incorpora un evento de base;
 no reconstruye investigaciones que ya fueron eliminadas.
+
+## Test único de una hipótesis propia
+
+En la interfaz, selecciona **Test único · mi hipótesis** y escribe la estrategia en lenguaje natural. Usa datos públicos o un manifiesto del intermediario y configura el modelo y la clave API. Este modo hace un solo intento, sin búsqueda web, sin optimización automática y sin generar una estrategia de reemplazo.
+
+Indica activos, temporalidad, dirección, entrada, salida, asignación, stop, objetivo y tenencia máxima. La traducción recibe únicamente el catálogo de campos y capacidades, sin precios, métricas ni resultados de intentos anteriores. Si detecta detalles esenciales ausentes, termina con un reporte que enumera lo que debes precisar. Las capacidades no disponibles se registran como pendientes, sin sustituir tu propuesta.
+
+Se guardan el texto original, las reglas interpretadas y los resultados. La interpretación de lenguaje natural puede contener errores: revisa las reglas del reporte. Se conservan los filtros, el conteo histórico de pruebas y la reserva final global: si supera las pruebas previas, **consume la reserva final, pase o falle**. Un test único no reinicia la evidencia ni permite reutilizar la reserva.
+
+También está disponible mediante `python trading_agent.py --model MODELO --hypothesis "Descripción completa de tu estrategia"`, opcionalmente con `--data-manifest`. No admite `--demo`.
