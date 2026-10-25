@@ -45,6 +45,65 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c)=>({"&"
 const pct = (v) => Number.isFinite(v) ? `${(v*100).toFixed(2)}%` : "—";
 const num = (v) => Number.isFinite(v) ? v.toFixed(2) : "—";
 const money = (v) => new Intl.NumberFormat("es-PY",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(v);
+let gherkinArtifact = null;
+let gherkinArtifactRun = null;
+$("gherkinText").oninput = () => { gherkinArtifact = null; };
+$("gherkinFile").onchange = async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (file.size > 1000000) return error("Markdown demasiado grande");
+  $("gherkinText").value = await file.text();
+  gherkinArtifact = null;
+};
+$("gherkinArtifact").onchange = async (event) => {
+  try {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (file.size > 8000000) throw new Error("Artefacto demasiado grande");
+    const raw = await file.text();
+    JSON.parse(raw); // Validate syntax; send original bytes' text to preserve hashed numbers.
+    gherkinArtifact = raw;
+    gherkinArtifactRun = snapshot?.output;
+    $("gherkinResult").textContent = "Artefacto cargado. Se verificarán hashes y escenarios antes de evaluar.";
+  } catch (exc) { gherkinArtifact = null; error(exc.message); }
+};
+async function startGherkin(action) {
+  if (starting || snapshot?.busy) return;
+  error(""); starting = true;
+  try {
+    if (action === "evaluate" && !gherkinArtifact) throw new Error("Traduce una especificación o carga su artefacto JSON.");
+    const payload = action === "translate"
+      ? {action, markdown:$("gherkinText").value, model:$("modelInput").value.trim(), api_key:$("apiKeyInput").value.trim()}
+      : {action, artifact:gherkinArtifact, data_manifest:$("gherkinManifest").value.trim()};
+    if (action === "translate") { gherkinArtifact = null; gherkinArtifactRun = snapshot?.output; }
+    await api("/api/gherkin/start", payload);
+    if (action === "translate") $("apiKeyInput").value = "";
+    revision = -1;
+    await refresh();
+  } catch (exc) { error(exc.message); }
+  finally { starting = false; }
+}
+$("gherkinTranslate").onclick = () => startGherkin("translate");
+$("gherkinEvaluate").onclick = () => startGherkin("evaluate");
+function renderGherkin(data) {
+  for (const id of ["gherkinTranslate", "gherkinEvaluate", "gherkinFile", "gherkinArtifact", "gherkinText", "gherkinManifest"]) $(id).disabled = data.busy;
+  const result = data.gherkin;
+  if (!result) return;
+  if (result.artifact && gherkinArtifactRun !== data.output) {
+    gherkinArtifact = result.artifact;
+    gherkinArtifactRun = data.output;
+  }
+  const visible = {...result};
+  delete visible.artifact;
+  $("gherkinResult").textContent = JSON.stringify(visible, null, 2);
+  const files = result.status === "TRANSLATED" ? ["strategy.json","strategy.md","program.json","conformance.json"]
+    : result.tests ? ["report.html","report.json","report.md","strategy.json"] : [];
+  if (result.execution_model === "tick_bid_ask_v1" && result.mean_return_interval) {
+    files.push("validation_trades.json", "validation_orders.json", "validation_equity.json", "research_audit.json");
+    if (result.holdout?.scenarios) files.push("holdout_trades.json", "holdout_orders.json", "holdout_equity.json");
+  }
+  $("gherkinDownloads").innerHTML = files.map(name => `<a href="/api/gherkin/download/${name}">${name}</a>`).join(" · ");
+}
 function renderResearch(report) {
   const research = report.research || {}, brief = research.brief;
   if (!brief) return `<h4 class="report-section-title">Investigación</h4><p>${escapeHtml(research.summary || research.rejection_reason || 'Sin ficha de investigación.')}</p>`;
@@ -136,6 +195,7 @@ $("followCurrent").onclick = () => {
 };
 function render(data) {
   snapshot = data;
+  renderGherkin(data);
   const s = data.state, busy = data.busy, lifecycle = s.lifecycle;
   if (displayedRun !== data.output) {
     displayedRun = data.output; selectedAttempt = null; selectedReport = null; reportRequest++;
@@ -145,6 +205,7 @@ function render(data) {
   let label = labels[lifecycle] || "EN ESPERA";
   if (busy && s.status === "REJECTED") label = data.max_iterations === 1 ? "FINALIZANDO TEST ÚNICO" : "INTENTO RECHAZADO · PREPARANDO ITERACIÓN";
   if (busy && data.stop_requested) label = "DETENIENDO INVESTIGACIÓN";
+  if (data.gherkin) label = "GHERKIN · " + data.gherkin.status;
   $("statusBadge").textContent = label;
   $("statusBadge").className = "status-badge " + (lifecycle==="ERROR"?"error":lifecycle==="COMPLETED"?"success":busy?"running":lifecycle==="EXHAUSTED"?"rejected":"");
   $("attemptCounter").textContent = data.max_iterations > 0 ? `${s.iteration_count} / ${data.max_iterations} intentos` : `${s.iteration_count} intentos · sin límite`;
@@ -155,6 +216,7 @@ function render(data) {
   if (lifecycle === "CANCELLED") description = "Detenida por tu solicitud. Los reportes completados permanecen disponibles.";
   if (lifecycle === "ERROR") description = data.error || s.logs.at(-1) || "La ejecución encontró un error operativo.";
   if (busy && data.stop_requested) description = "Cancelando el cálculo o la espera del modelo y conservando los reportes completados.";
+  if (data.gherkin) description = busy ? "Procesando la especificación. Los resultados aparecerán en el panel Gherkin." : "Consulta el resultado de conformidad y evaluación en el panel Gherkin. Finalizar no implica aprobar la estrategia.";
   $("stageDescription").textContent = description;
   document.querySelector(".status-panel").classList.toggle("working",busy);
   $("startButton").disabled = busy || starting; $("startButton").textContent = busy ? "Evaluando…" : $("runMode").value === "single" ? "▶ Probar mi hipótesis" : s.iteration_count ? "↻ Nueva investigación" : "▶ Iniciar investigación";

@@ -40,6 +40,68 @@ class JobManager:
         self.error = ""
         self.thread = None
         self.data_info = {}
+        self.gherkin_result = None
+
+    def start_gherkin(self, payload):
+        from gherkin_spec import parse_markdown, json_value
+        from gherkin_pipeline import load_bundle
+        payload = dict(payload)
+        action = payload.get("action")
+        if action not in ("translate", "evaluate"):
+            raise ValueError("Acción Gherkin inválida")
+        if action == "translate":
+            parse_markdown(payload.get("markdown"))
+        else:
+            if isinstance(payload.get("artifact"), str):
+                payload["artifact"] = json_value(payload["artifact"])
+            load_bundle(payload.get("artifact"))
+            if payload.get("data_manifest") is not None and not isinstance(payload["data_manifest"], str):
+                raise ValueError("Ruta de catálogo o manifiesto inválida")
+            payload['data_manifest']=payload.get('data_manifest') or None
+        with self.lock:
+            if self.busy:
+                raise RuntimeError("Ya hay un trabajo activo")
+            self.stop.clear()
+            self.busy, self.error, self.synthetic = True, "", False
+            self.gherkin_result = {"status": "TRANSLATING" if action == "translate" else "EVALUATING", "action": action}
+            self.output = self.output_root / datetime.now(timezone.utc).strftime("gherkin_%Y%m%dT%H%M%S%fZ")
+            self.state = {**initial_state(), "lifecycle": "RUNNING", "strategy_name": "Especificación Gherkin"}
+            self.revision += 1
+            self.thread = threading.Thread(target=self._gherkin_work, args=(dict(payload), self.output), daemon=True)
+            self.thread.start()
+
+    def _gherkin_work(self, payload, output):
+        from gherkin_pipeline import translate, evaluate, save_translation, save_json
+        key = payload.get("api_key") or None
+        def checkpoint():
+            if self.stop.is_set():
+                raise RunCancelled()
+        try:
+            if payload["action"] == "translate":
+                bundle = translate(payload["markdown"], payload.get("model") or os.getenv("OPENAI_MODEL"), key, checkpoint=checkpoint)
+                checkpoint()
+                save_translation(bundle, output)
+                # Preserve numeric representations through the browser's JSON round trip.
+                result = {"status": "TRANSLATED", "artifact": json.dumps(bundle, ensure_ascii=False, allow_nan=False), "scenarios": bundle["scenarios"],
+                          "semantic_scope": bundle["semantic_scope"]}
+            else:
+                result = evaluate(payload["artifact"], payload["data_manifest"], output, checkpoint)
+            with self.lock:
+                self.gherkin_result = result
+                self.state.update(lifecycle="COMPLETED", strategy_name=result.get("strategy", "Especificación Gherkin"))
+        except Exception as exc:
+            status = "CANCELLED" if isinstance(exc, RunCancelled) else getattr(exc, "status", "ERROR")
+            message = str(exc).replace(key, "[clave omitida]") if key else str(exc)
+            result = {"status": status, "error": message or "Trabajo cancelado"}
+            output.mkdir(parents=True, exist_ok=True)
+            save_json(output / "failure.json", result)
+            with self.lock:
+                self.gherkin_result, self.error = result, result["error"]
+                self.state.update(lifecycle="CANCELLED" if status == "CANCELLED" else "ERROR")
+        finally:
+            with self.lock:
+                self.busy = False
+                self.revision += 1
 
     def update(self, state):
         with self.lock:
@@ -92,8 +154,9 @@ class JobManager:
             if self.busy:
                 raise RuntimeError("Ya hay una búsqueda activa")
             self.settings, self.synthetic, self.error = cfg, mode == "demo", ""
+            self.gherkin_result = None
             self.state = {**initial_state(), "lifecycle": "STARTING"}
-            self.data_info = {"name": "Demo · cinco series sintéticas" if self.synthetic else "Dukascopy + Coinbase · descargando", "assets": {}}
+            self.data_info = {"name": "Demo · cinco series sintéticas" if self.synthetic else "Históricos locales · sin descargas", "assets": {}}
             self.output = self.output_root / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             self.events = []
             self.stop.clear()
@@ -120,7 +183,7 @@ class JobManager:
                 self.data_info = {"name": "Demo sintética" if synthetic else "Contrato local" if local_metadata else "Dukascopy + Coinbase · diario", "assets": metadata}
             agent = TradingAgent(data, cfg, output, model, synthetic, on_event=self.update,
                                  stop_requested=self.stop.is_set, api_key=key, market_metadata=metadata, asset_settings=profiles,
-                                 natural_hypothesis=hypothesis)
+                                 natural_hypothesis=hypothesis, audit_root=self.output_root)
             agent.run()
         except RunCancelled:
             with self.lock:
@@ -155,7 +218,8 @@ class JobManager:
             return {"revision": self.revision, "busy": self.busy, "stop_requested": self.stop.is_set(),
                     "state": state, "events": list(self.events), "synthetic": self.synthetic,
                     "max_iterations": self.settings.max_iterations, "data": self.data_info,
-                    "error": self.error, "output": str(self.output) if self.output else None}
+                    "error": self.error, "output": str(self.output) if self.output else None,
+                    "gherkin": copy.deepcopy(self.gherkin_result)}
 
 
 def create_server(port: int, manager: JobManager | None = None):
@@ -206,6 +270,20 @@ def create_server(port: int, manager: JobManager | None = None):
                 return self.send(200, snapshot)
             if url.path == "/api/config":
                 return self.send(200, {"has_api_key": bool(os.getenv("OPENAI_API_KEY")), "model": os.getenv("OPENAI_MODEL", "")})
+            if url.path == "/api/gherkin/example":
+                return self.send(200, (ROOT / "examples/strategy-gherkin.md").read_bytes(), "text/markdown; charset=utf-8", "strategy.md")
+            if url.path == "/api/gherkin/example-ticks":
+                return self.send(200, (ROOT / "examples/strategy-ticks-gherkin.md").read_bytes(), "text/markdown; charset=utf-8", "strategy-ticks.md")
+            if url.path.startswith("/api/gherkin/download/"):
+                name = url.path.rsplit("/", 1)[-1]
+                allowed = {"strategy.json", "strategy.md", "program.json", "conformance.json", "report.json", "report.md", "report.html", "failure.json",
+                           "validation_trades.json", "validation_orders.json", "validation_equity.json",
+                           "holdout_trades.json", "holdout_orders.json", "holdout_equity.json", "research_audit.json"}
+                with jobs.lock:
+                    output = jobs.output if jobs.gherkin_result is not None else None
+                if name in allowed and output and (output / name).is_file():
+                    return self.send(200, (output / name).read_bytes(), "application/octet-stream", name)
+                return self.send(404, {"error": "Artefacto no disponible"})
             match = re.fullmatch(r"/api/report/(\d{1,18})\.(json|html|md)", url.path)
             if match:
                 with jobs.lock:
@@ -247,6 +325,9 @@ def create_server(port: int, manager: JobManager | None = None):
                     raise ValueError("Solicitud inválida")
                 if self.path == "/api/start":
                     jobs.start(payload)
+                    return self.send(202, {"started": True})
+                if self.path == "/api/gherkin/start":
+                    jobs.start_gherkin(payload)
                     return self.send(202, {"started": True})
                 if self.path == "/api/stop":
                     jobs.cancel()

@@ -107,7 +107,7 @@ def download_asset(asset, start, end, checkpoint=lambda: None, fetch=request_jso
 
 
 def load_public_data(cache: Path, checkpoint=lambda: None, progress=lambda message: None,
-                     start="2018-01-01", end=None):
+                     start="2018-01-01", end=None, *, allow_download=False):
     from trading_agent import validate_data
     start = pd.Timestamp(start, tz="UTC")
     today = pd.Timestamp.now(tz="UTC").normalize()
@@ -116,12 +116,14 @@ def load_public_data(cache: Path, checkpoint=lambda: None, progress=lambda messa
     datasets, metadata = {}, {}
     for asset, spec in ASSETS.items():
         checkpoint()
-        progress(f"Descargando {spec['label']} · velas diarias públicas")
+        progress(f"Leyendo histórico local {spec['label']} · velas diarias")
         file = cache / f"{asset}_{start.date()}_{end.date()}_v2.json"
         if file.exists():
             snapshot = json.loads(file.read_text(encoding="utf-8"))
             frame, urls = pd.DataFrame(snapshot["candles"]), snapshot["urls"]
         else:
+            if not allow_download:
+                raise ValueError(f"Falta caché local de {asset} para {start.date()}–{end.date()}. Usa Gherkin con el catálogo local o prepara los datos antes de evaluar.")
             frame, urls = download_asset(asset, start, end, checkpoint)
         frame = validate_data(frame)
         if (end - frame.timestamp.iloc[-1]).days > 7:

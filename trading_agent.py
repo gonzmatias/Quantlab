@@ -607,7 +607,7 @@ class TradingAgent:
     def __init__(self, data: pd.DataFrame, cfg: Settings, output: Path,
                  model: str | None = None, demo: bool = False, on_event=None,
                  stop_requested=None, api_key: str | None = None, market_metadata=None, asset_settings=None,
-                 natural_hypothesis: str | None = None):
+                 natural_hypothesis: str | None = None, audit_root: Path | None = None):
         if natural_hypothesis is not None:
             if not isinstance(natural_hypothesis, str) or not 20 <= len(natural_hypothesis.strip()) <= 20000:
                 raise ValueError("Describe la hipótesis con entre 20 y 20000 caracteres")
@@ -616,6 +616,7 @@ class TradingAgent:
             natural_hypothesis = natural_hypothesis.strip()
             cfg = replace(cfg, max_iterations=1)
         self.natural_hypothesis = natural_hypothesis
+        audit_root = Path(audit_root) if audit_root is not None else output.parent
         self.datasets = {k: validate_data(v) for k, v in data.items()} if isinstance(data, dict) else {}
         self.data, self.cfg, self.output, self.demo = validate_data(next(iter(self.datasets.values())) if self.datasets else data), cfg, output, demo
         self.full_datasets = {k: v.copy() for k, v in (self.datasets or {"CUSTOM": self.data}).items()}
@@ -623,8 +624,8 @@ class TradingAgent:
         if not demo:
             if cfg.max_iterations <= 0:
                 raise ValueError("La investigación real requiere un presupuesto positivo de intentos")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            self.holdout_ledger = HoldoutLedger(output.parent / "holdout_ledger.sqlite3")
+            audit_root.mkdir(parents=True, exist_ok=True)
+            self.holdout_ledger = HoldoutLedger(audit_root / "holdout_ledger.sqlite3")
             discovery, training_end, cutoff = partition(self.full_datasets)
             previous_end = self.holdout_ledger.latest_end()
             if previous_end is not None:
@@ -664,7 +665,8 @@ class TradingAgent:
         with closing(sqlite3.connect(self.registry)) as db, db:
             db.execute("CREATE TABLE hypotheses (signature TEXT PRIMARY KEY, hypothesis TEXT NOT NULL, attempt INTEGER NOT NULL)")
             db.execute("CREATE TABLE research (attempt INTEGER PRIMARY KEY, dossier TEXT NOT NULL)")
-        self.memory = ResearchMemory(output.parent / ("research_memory_demo.sqlite3" if demo else "research_memory.sqlite3"))
+        audit_root.mkdir(parents=True, exist_ok=True)
+        self.memory = ResearchMemory(audit_root / ("research_memory_demo.sqlite3" if demo else "research_memory.sqlite3"))
         self.run_id = str(output.resolve())
         self.memory.append("RUN_STARTED", {"run": self.run_id, "settings": asdict(cfg),
                            "asset_settings": self.asset_settings, "market_metadata": self.market_metadata,
@@ -683,6 +685,8 @@ class TradingAgent:
             from langchain_openai import ChatOpenAI
             self.llm = ChatOpenAI(model=model, timeout=60, max_retries=2,
                                  **({"api_key": api_key} if api_key else {}))
+            self.holdout_ledger.observe(min(f.timestamp.iloc[0] for f in self.raw_datasets.values()),
+                                        self.holdout_start - pd.Timedelta(nanoseconds=1), self.run_id)
 
     def research_scope(self):
         scope_data = {asset: hashlib.sha256(frame.to_csv(index=False).encode()).hexdigest()
@@ -1507,7 +1511,7 @@ def main():
         data, metadata = load_public_data(Path("outputs/market_cache"), progress=print)
     output = args.output or Path("outputs") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     result = TradingAgent(data, cfg, output, args.model, args.demo, market_metadata=metadata, asset_settings=profiles,
-                          natural_hypothesis=args.hypothesis).run()
+                          natural_hypothesis=args.hypothesis, audit_root=Path(__file__).resolve().parent / "outputs").run()
     print(json.dumps({"status": result["status"], "attempts": result["iteration_count"],
                       "artifacts": str(output.resolve())}, indent=2))
 

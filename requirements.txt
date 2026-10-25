@@ -4,3 +4,6 @@ openai>=2.0,<4
 numpy>=2.0,<3
 pandas>=2.2,<4
 pydantic>=2.10,<3
+gherkin-official>=29,<40
+duckdb>=1.4,<2
+pyarrow>=20,<24

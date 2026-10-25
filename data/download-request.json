@@ -1,0 +1,7 @@
+{
+  "provider": "Dukascopy",
+  "assets": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "XAUUSD"],
+  "start": "2016-01-01T00:00:00Z",
+  "end": "2026-01-01T00:00:00Z",
+  "storage": "parquet_duckdb_v1"
+}

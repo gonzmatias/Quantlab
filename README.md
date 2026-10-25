@@ -1,5 +1,17 @@
 # Quant Lab · investigación reproducible y contratos de ejecución
 
+## Evaluar una estrategia definida en Gherkin
+
+El panel incluye carga de `.md`, traducción con IA y evaluación separada **sin IA**.
+Las reglas se congelan como código declarativo; los escenarios del documento se
+comprueban antes de usar datos históricos. Contratos o pasos incompatibles bloquean
+la prueba sin aproximarlos. [Guía y límites](GHERKIN.md) · [Plantilla](examples/strategy-gherkin.md).
+
+El contrato Gherkin v2 añade replay de ticks bid/ask, stops intrabar, órdenes
+market/limit y latencia explícita. Las estadísticas usan intervalos de tiempo;
+la exposición mide tiempo en posición. [Guía de ticks](TICKS.md) ·
+[Plantilla de ticks](examples/strategy-ticks-gherkin.md).
+
 ## Ejecutar
 
 ```powershell
@@ -397,7 +409,7 @@ constituye automáticamente una nueva validación.
   regresión y concentración son diagnósticas.
 - Se reutiliza OOS adaptativamente. Una búsqueda ilimitada no garantiza hallar
   rentabilidad; los ajustes no reemplazan datos posteriores independientes.
-- Long/short por contrato, nocional sin apalancamiento. Señales y stops al cierre de señal, ejecución en apertura
+- En el motor de velas: long/short por contrato, nocional sin apalancamiento. Señales y stops al cierre de señal, ejecución en apertura
   posterior disponible. No fills de stops intrabar. Drawdown al cierre y cota inferior intrabar basada en high/low; ambos se contrastan con el límite. Esa cota no reconstruye máximos y mínimos secuenciales ni liquidez.
 - Los tres escenarios al capital configurado deben ganar, respetar DD, tener operaciones
   suficientes y evitar quiebra. El mínimo de operaciones no garantiza significancia.

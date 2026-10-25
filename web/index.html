@@ -27,6 +27,24 @@
 <main id="overview">
   <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Investigación cuantitativa</strong></span><div class="topbar-actions"><button id="themeToggle" class="button secondary" type="button" aria-label="Modo oscuro" aria-pressed="false"><span id="themeIcon" aria-hidden="true">☾</span><span>Modo oscuro</span></button><span class="local-pill">◉ LOCAL</span></div></header>
   <div class="page-heading"><div><div class="eyebrow">DE LA HIPÓTESIS A LA EVIDENCIA</div><h1>Laboratorio de estrategias<span>.</span></h1><p>Observa cada prueba. Entiende cada resultado.</p></div><button id="settingsButton" class="button secondary">⚙ Configurar pruebas</button></div>
+  <section class="panel" aria-label="Evaluación Gherkin">
+    <h2>Estrategia desde un documento Gherkin</h2>
+    <p>Traduce una vez con IA. Verifica los escenarios y evalúa el artefacto con herramientas, sin IA.</p>
+    <p>Plantillas .md: <a href="/api/gherkin/example">velas</a> · <a href="/api/gherkin/example-ticks">ticks y stops intrabar</a>. El documento fija reglas, instrumento, costos y protocolo. Una capacidad ausente bloquea la evaluación.</p>
+    <label for="gherkinFile">Documento .md</label>
+    <input id="gherkinFile" type="file" accept=".md,text/markdown">
+    <textarea id="gherkinText" rows="8" maxlength="250000" style="width:100%;box-sizing:border-box" aria-label="Contenido Markdown con Gherkin" placeholder="Carga un documento o pega el Markdown con su bloque Gherkin."></textarea>
+    <button id="gherkinTranslate" class="button secondary" type="button">1. Traducir y verificar escenarios</button>
+    <p>La traducción usa el modelo y la clave de Configurar pruebas. Los ejemplos comprueban casos concretos; no prueban equivalencia universal del lenguaje natural.</p>
+    <label for="gherkinArtifact">Artefacto .json guardado (opcional después de traducir)</label>
+    <input id="gherkinArtifact" type="file" accept=".json,application/json">
+    <label for="gherkinManifest">Ruta del manifiesto de datos</label>
+    <input id="gherkinManifest" type="text" placeholder="C:\datos\manifest.json">
+    <button id="gherkinEvaluate" class="button primary" type="button">2. Evaluar sin IA</button>
+    <p>Se aplica el protocolo declarado: 60/20/20, causalidad, DSR, walk-forward, costos, Monte Carlo y reserva final de un solo uso. No se cambian las reglas.</p>
+    <div id="gherkinDownloads"></div>
+    <pre id="gherkinResult" style="white-space:pre-wrap;max-height:36rem;overflow:auto" aria-live="polite">Carga una especificación para comenzar.</pre>
+  </section>
   <section class="panel" aria-label="Tipo de prueba">
     <label for="runMode">Tipo de prueba</label>
     <select id="runMode"><option value="search">Investigación automática</option><option value="single">Test único · mi hipótesis</option></select>

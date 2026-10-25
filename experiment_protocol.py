@@ -66,6 +66,31 @@ class HoldoutLedger:
         self.path = path
         with closing(sqlite3.connect(path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS holdouts (id INTEGER PRIMARY KEY, start TEXT, end TEXT, run TEXT, signature TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS observed_intervals (id INTEGER PRIMARY KEY, start TEXT, end TEXT, run TEXT)")
+            # Normalize legacy rows too: offsets and variable precision are not
+            # chronologically comparable as SQLite TEXT.
+            for table in ("holdouts", "observed_intervals"):
+                for identifier, start, end in db.execute(f"SELECT id,start,end FROM {table}").fetchall():
+                    normalized = (self.utc_key(start), self.utc_key(end))
+                    if normalized != (start, end):
+                        db.execute(f"UPDATE {table} SET start=?,end=? WHERE id=?", (*normalized, identifier))
+
+    @staticmethod
+    def utc_key(value):
+        timestamp = pd.Timestamp(value)
+        if pd.isna(timestamp):
+            raise ValueError("Fecha inválida en registro de reserva")
+        timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+        fraction = timestamp.microsecond * 1000 + timestamp.nanosecond
+        return timestamp.strftime("%Y-%m-%dT%H:%M:%S") + f".{fraction:09d}+00:00"
+
+    def observe(self, start, end, run):
+        """Record discovery exposure before computing or showing its results."""
+        start, end = self.utc_key(start), self.utc_key(end)
+        if start > end:
+            raise ValueError("Intervalo observado inválido")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("INSERT INTO observed_intervals(start,end,run) VALUES (?,?,?)", (start, end, run))
 
     def latest_end(self):
         with closing(sqlite3.connect(self.path)) as db:
@@ -73,10 +98,14 @@ class HoldoutLedger:
         return pd.Timestamp(value) if value else None
 
     def reserve(self, start, end, run, signature):
-        start, end = pd.Timestamp(start).isoformat(), pd.Timestamp(end).isoformat()
+        start, end = self.utc_key(start), self.utc_key(end)
+        if start > end:
+            raise ValueError("Intervalo reservado inválido")
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM holdouts WHERE start <= ? AND end >= ?", (end, start)).fetchone():
+                return False
+            if db.execute("SELECT 1 FROM observed_intervals WHERE start <= ? AND end >= ?", (end, start)).fetchone():
                 return False
             db.execute("INSERT INTO holdouts(start,end,run,signature) VALUES (?,?,?,?)", (start, end, run, signature))
         return True
